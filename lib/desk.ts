@@ -1,4 +1,5 @@
 import { Prisma, type Template } from '@prisma/client';
+import { createHash } from 'node:crypto';
 import { db } from '@/lib/db';
 import { credentials, DeskError, graph, GraphError, setup } from './meta';
 
@@ -35,12 +36,17 @@ function summarize(t: Template) {
 }
 
 export async function state() {
-  const [contacts, templates, messages] = await Promise.all([
-    db.contact.findMany({ orderBy:{ name:'asc' } }),
+  const [contacts, groups, templates, messages] = await Promise.all([
+    db.contact.findMany({ include:{groups:{include:{group:true}}}, orderBy:{ name:'asc' } }),
+    db.contactGroup.findMany({include:{_count:{select:{contacts:true}}},orderBy:{name:'asc'}}),
     db.template.findMany({ orderBy:[{name:'asc'},{language:'asc'}] }),
     db.message.findMany({ orderBy:[{createdAt:'desc'},{id:'desc'}], take:250 }),
   ]);
-  return { contacts, templates:templates.map(summarize), messages, setup:setup() };
+  return {
+    contacts:contacts.map(({groups:memberships,...c})=>({...c,groups:memberships.map(m=>m.group)})),
+    groups:groups.map(({_count,...g})=>({...g,contactCount:_count.contacts})),
+    templates:templates.map(summarize), messages, setup:setup(),
+  };
 }
 
 export async function contact(input: Input) {
@@ -49,14 +55,43 @@ export async function contact(input: Input) {
   if (!/^\+[1-9]\d{6,14}$/.test(phone)) throw new DeskError('Include the country code, e.g. +919876543210.');
   if (typeof input.consent !== 'boolean') throw new DeskError('Choose a consent status.');
   const consent = input.consent;
+  const groupIds = input.groupIds === undefined ? undefined : await validateGroupIds(input.groupIds);
   if (input.id) {
     const id = field(input.id,'contact ID');
     const existing = await db.contact.findUniqueOrThrow({where:{id}});
     const consentAt = consent ? (existing.phone === phone ? existing.consentAt : null) ?? new Date() : null;
-    await db.contact.update({where:{id},data:{name,phone,consent,consentAt}});
+    const data={name,phone,consent,consentAt};
+    if (groupIds === undefined) await db.contact.update({where:{id},data});
+    else await db.$transaction(async tx=>{
+      await tx.contact.update({where:{id},data});
+      await tx.contactGroupMembership.deleteMany({where:{contactId:id}});
+      if (groupIds.length) await tx.contactGroupMembership.createMany({data:groupIds.map(groupId=>({contactId:id,groupId}))});
+    });
   } else {
-    await db.contact.create({data:{name,phone,consent,consentAt:consent ? new Date() : null}});
+    await db.contact.create({data:{
+      name,phone,consent,consentAt:consent ? new Date() : null,
+      ...(groupIds?.length ? {groups:{create:groupIds.map(groupId=>({group:{connect:{id:groupId}}}))}} : {}),
+    }});
   }
+}
+
+async function validateGroupIds(raw:unknown):Promise<string[]> {
+  if (!Array.isArray(raw) || raw.length>100) throw new DeskError('Choose up to 100 contact groups.');
+  const ids=[...new Set(raw.map(id=>field(id,'group ID',64)))];
+  if (ids.length!==raw.length) throw new DeskError('A contact group was selected more than once.');
+  if (ids.length && (await db.contactGroup.count({where:{id:{in:ids}}}))!==ids.length) throw new DeskError('One of the selected groups no longer exists.',404);
+  return ids;
+}
+
+export async function createGroup(input:Input) {
+  const name=field(input.name,'group name',80);
+  if (await db.contactGroup.findFirst({where:{name:{equals:name,mode:'insensitive'}}})) throw new DeskError('A group with this name already exists.',409);
+  await db.contactGroup.create({data:{name}});
+}
+
+export async function deleteGroup(input:Input) {
+  const id=field(input.id,'group ID',64);
+  await db.contactGroup.delete({where:{id}});
 }
 
 function saveTemplate(t: MetaTemplate) {
@@ -154,5 +189,33 @@ export async function send(input: Input) {
     db.message.update({where:{id:outbound.id},data:{metaId}}),
     db.message.updateMany({where:{id:outbound.id,status:'submitting'},data:{status:'accepted'}}),
   ]);
+}
+
+function recipientRequestId(batchId:string,contactId:string) {
+  const bytes=createHash('sha256').update(batchId+'\0'+contactId).digest().subarray(0,16);
+  bytes[6]=(bytes[6]&0x0f)|0x50;
+  bytes[8]=(bytes[8]&0x3f)|0x80;
+  const hex=bytes.toString('hex');
+  return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20);
+}
+
+export async function sendGroup(input:Input) {
+  const groupId=field(input.groupId,'contact group ID',64);
+  const batchId=field(input.batchId,'send reference',40);
+  if (!/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(batchId)) throw new DeskError('Invalid send reference.');
+  const group=await db.contactGroup.findUniqueOrThrow({where:{id:groupId},include:{contacts:{include:{contact:true}}}});
+  const contacts=group.contacts.map(m=>m.contact).sort((a,b)=>a.name.localeCompare(b.name)||a.phone.localeCompare(b.phone));
+  const eligible=contacts.filter(c=>c.consent);
+  if (!eligible.length) throw new DeskError('This group has no contacts who opted in to WhatsApp messages.',409);
+  let sent=0,failed=0;
+  for (const recipient of eligible) {
+    try {
+      await send({...input,contactId:recipient.id,requestId:recipientRequestId(batchId,recipient.id)});
+      sent++;
+    } catch {
+      failed++;
+    }
+  }
+  return {groupName:group.name,total:contacts.length,eligible:eligible.length,sent,failed,skipped:contacts.length-eligible.length};
 }
 

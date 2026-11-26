@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { isAuthorized, isSameOrigin } from '@/lib/auth';
-import { contact, send, state, submitTemplate, sync } from '@/lib/desk';
+import { contact, createGroup, deleteGroup, send, sendGroup, state, submitTemplate, sync } from '@/lib/desk';
 import { credentials, DeskError, graph } from '@/lib/meta';
 
 export const dynamic = 'force-dynamic';
@@ -39,8 +39,11 @@ export async function POST(req: Request, ctx: Context) {
     if (!input || Array.isArray(input) || typeof input !== 'object') return reply({error:'Expected a JSON object.'},400);
     switch ((await ctx.params).action) {
       case 'contacts': await contact(input); break;
+      case 'groups': await createGroup(input); break;
+      case 'delete-group': await deleteGroup(input); break;
       case 'templates': await submitTemplate(input); break;
       case 'send': await send(input); break;
+      case 'send-group': return reply(await sendGroup(input));
       case 'sync': await sync(); break;
       case 'check': {
         const config = credentials();

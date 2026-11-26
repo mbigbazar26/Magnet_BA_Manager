@@ -15,6 +15,26 @@ model Contact {
   consentAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  groups    ContactGroupMembership[]
+}
+
+model ContactGroup {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  contacts  ContactGroupMembership[]
+}
+
+model ContactGroupMembership {
+  contactId String
+  groupId   String
+  createdAt DateTime     @default(now())
+  contact   Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  group     ContactGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, groupId])
+  @@index([groupId])
 }
 
 model Template {

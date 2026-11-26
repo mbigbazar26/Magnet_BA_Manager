@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Action, Contact, DeskState, Message, View } from "../components/types";
-import { Badge, Compose, ContactEditor, TemplateEditor } from "../components/forms";
+import { Badge, Compose, ContactEditor, GroupManager, TemplateEditor } from "../components/forms";
 
 const nav: {view:View;mark:string}[] = [{view:"Overview",mark:"▦"},{view:"Messages",mark:"✉"},{view:"Contacts",mark:"♧"},{view:"Templates",mark:"▤"},{view:"Setup",mark:"⚙"}];
 const dateTime=(date:string)=>new Intl.DateTimeFormat(undefined,{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"}).format(new Date(date));
@@ -45,7 +45,12 @@ export default function Dashboard(){
       const response=await fetch("/api/desk/"+action,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       if(response.status===401||response.redirected){window.location.assign("/login");return false;}
       const result=await response.json();if(!response.ok || result.error)throw new Error(result.error||"The request failed.");
-      setNotice(action==="check" ? "Connected to "+result.account+" · "+result.phone : success);await refresh();return true;
+      const message=action==="check"
+        ? "Connected to "+result.account+" · "+result.phone
+        : action==="send-group"
+          ? `Meta accepted ${result.sent} messages for “${result.groupName}”; ${result.failed} not confirmed, ${result.skipped} skipped because consent is missing.`
+          : success;
+      setNotice(message);await refresh();return true;
     }catch(e){setError(e instanceof Error?e.message:"The request failed.");await refresh();return false;}
     finally{pending.current=false;setBusy(false);}
   }
@@ -70,10 +75,11 @@ export default function Dashboard(){
     {state&&view==="Overview"&&<>
       <section className="account-card"><div><small>Sending account</small><h2>Mancherikalam BigBazar</h2><p>{state.setup.phoneNumberId==="1524500964085667"?"+91 77366 85977":state.setup.phoneNumberId?"Phone ID "+state.setup.phoneNumberId:"Configure your business number"}</p></div><button onClick={()=>go("Setup")}>Account setup <span aria-hidden>↗</span></button></section>
       <div className="stats">{[{label:"Contacts",value:state.contacts.length,view:"Contacts"},{label:"Approved text templates",value:sendable.length,view:"Templates"},{label:"Recent messages (up to 250)",value:state.messages.length,view:"Messages"}].map(s=><button key={s.label} onClick={()=>go(s.view as View)}><span>{s.label}</span><strong>{s.value}</strong><i aria-hidden>↗</i></button>)}</div>
+      <section className="panel padded"><h2>Messaging balance</h2><p>Balance and remaining message estimates are unavailable in this desk. Check your payment account in Meta for the current balance.</p></section>
       <section className="panel"><div className="card-head"><h2>Recent messages</h2><button className="link" onClick={()=>go("Messages")}>View history →</button></div>{state.messages.length?<MessageRows state={state} rows={state.messages.slice(0,5)} />:<Empty title="Your message history starts here" details="Send your first template or connect a webhook to receive customer replies."/>}</section>
     </>}
     {state&&view==="Messages"&&<section className="panel"><div className="toolbar"><input aria-label="Search messages" placeholder="Search name, phone or message" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Direction" value={direction} onChange={e=>setDirection(e.target.value)}><option value="all">All messages</option><option value="IN">Incoming</option><option value="OUT">Outgoing</option></select><button className="secondary" onClick={refresh}>Refresh</button></div>{feed.length?<MessageRows rows={feed} state={state}/>:<Empty title="No matching messages" details={query?"Try a different search.":"Delivery updates and replies appear here when the webhook is connected."}/>}</section>}
-    {state&&view==="Contacts"&&<>{edit&&<ContactEditor key={edit==="new"?"new":edit.id} contact={edit==="new"?undefined:edit} run={run} busy={busy} close={()=>setEdit(null)}/>}<section className="panel"><div className="toolbar"><h2>Address book</h2><input aria-label="Search contacts" placeholder="Search name or phone" value={query} onChange={e=>setQuery(e.target.value)}/></div>{book.length?<ul className="items">{book.map(c=><li key={c.id}><span className="avatar">{avatar(c.name)}</span><div className="list-main"><strong>{c.name}</strong><small>{c.phone}</small></div><Badge status={c.consent?"Opted in":"No consent"}/><button className="quiet" onClick={()=>setEdit(c)}>Edit</button></li>)}</ul>:<Empty title={query?"No matching contacts":"Your address book is empty"} details="Add a customer's name, number and messaging consent."/>}</section></>}
+    {state&&view==="Contacts"&&<>{edit&&<ContactEditor key={edit==="new"?"new":edit.id} contact={edit==="new"?undefined:edit} groups={state.groups} run={run} busy={busy} close={()=>setEdit(null)}/>}<GroupManager groups={state.groups} run={run} busy={busy}/><section className="panel"><div className="toolbar"><h2>Address book</h2><input aria-label="Search contacts" placeholder="Search name or phone" value={query} onChange={e=>setQuery(e.target.value)}/></div>{book.length?<ul className="items">{book.map(c=><li key={c.id}><span className="avatar">{avatar(c.name)}</span><div className="list-main"><strong>{c.name}</strong><small>{c.phone}</small>{c.groups.length>0&&<div className="group-tags">{c.groups.map(g=><span key={g.id}>{g.name}</span>)}</div>}</div><Badge status={c.consent?"Opted in":"No consent"}/><button className="quiet" onClick={()=>setEdit(c)}>Edit</button></li>)}</ul>:<Empty title={query?"No matching contacts":"Your address book is empty"} details="Add a customer's name, number and messaging consent."/>}</section></>}
     {state&&view==="Templates"&&<>{creating&&<TemplateEditor run={run} busy={busy} close={()=>setCreating(false)}/>}<section className="panel"><div className="card-head"><h2>Template library</h2><small>{state.templates.length} total</small></div>{state.templates.length?<ul className="items">{state.templates.map(t=><li key={t.id}><span className="avatar tile">▤</span><div className="list-main"><strong>{t.name}</strong><small>{t.language} · {t.category.toLowerCase()}{!t.supported?" · Unsupported format":""}</small><p className="message-text">{t.body}</p></div><Badge status={t.status}/></li>)}</ul>:<Empty title="No templates in the local library" details="Sync templates from Meta or create one for review."/>}</section></>}
     {state&&view==="Compose"&&<Compose state={state} run={run} busy={busy} go={go}/>}
     {state&&view==="Setup"&&<SetupPanel state={state} run={run} busy={busy}/>}

@@ -10,13 +10,13 @@ Double-click `Connect Meta.cmd` to enter the System User access token. The input
 
 ## Using the desk
 
-1. Open **Contacts** and add a person's name and phone number with its country code, for example `+919876543210`. Record consent only when the person has opted in. You can edit a contact to update or withdraw consent.
+1. Open **Contacts** and add a person's name and phone number with its country code, for example `+919876543210`. Record consent only when the person has opted in. Create groups and edit a contact to assign it to multiple groups. You can edit a contact to update or withdraw consent.
 2. Open **Templates** and select **Sync from Meta** to retrieve templates for the configured Messaging Account. To create a template, supply its lowercase name, language code, category and body. Numbered body fields such as `{{1}}` need example values during submission.
 3. Meta reviews new templates. Select **Sync from Meta** again to refresh their status. A pending or rejected template cannot be sent from the desk.
-4. Under **Compose**, choose an opted-in contact and an approved supported template. Fill each numbered field, review the recipient and message preview, and confirm the send. Meta may charge for eligible messages.
+4. Under **Compose**, choose one opted-in contact or a contact group and an approved supported template. Group sends include only opted-in contacts; other group members are skipped. Fill each numbered field, review the recipient count and message preview, and confirm the send. The desk sends one message per eligible contact and reports accepted, not-confirmed, and skipped counts. Meta may charge for eligible messages.
 5. Open **Messages** to inspect recent outgoing and incoming messages. The desk shows the most recent 250 messages. A webhook is required for delivery updates and incoming messages.
 
-The current version sends body-only text templates, including numbered positional fields. Templates with headers, buttons, media or other components may sync but cannot be sent from the desk. Each send is to one contact. Scheduling, bulk campaigns and automatic order triggers are future work.
+The current version sends body-only text templates, including numbered positional fields. Templates with headers, buttons, media or other components may sync but cannot be sent from the desk. Group sends are submitted as individual messages to opted-in members. Scheduling and automatic order triggers are future work.
 
 ## Message and template statuses
 
