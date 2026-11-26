@@ -1,6 +1,13 @@
 "use client";
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Action, Contact, ContactGroup, DeskState } from "./types";
+
+async function uploadImage(file:File,mode:"example"|"message",appId?:string) {
+  const form=new FormData();form.set("file",file);form.set("mode",mode);if(appId)form.set("appId",appId);
+  const response=await fetch("/api/image-upload",{method:"POST",body:form});
+  const data=await response.json();if(!response.ok)throw new Error(data.error||"Image upload failed.");
+  return mode==="example"?data.handle as string:data.id as string;
+}
 
 export function Badge({ status }: {status:string}) {
   const tone = /^(approved|delivered|read|received|opted in)$/i.test(status) ? "mint" : /failed|rejected|error|unknown/i.test(status) ? "rose" : /pending|submitt|sending/i.test(status) ? "amber" : "neutral";
@@ -39,28 +46,39 @@ export function GroupManager({groups,run,busy}:{groups:ContactGroup[];run:Action
 
 export function TemplateEditor({run,busy,close}:{run:Action;busy:boolean;close:()=>void}) {
   const [body,setBody] = useState("");
+  const [category,setCategory]=useState("UTILITY"),[image,setImage]=useState<File|null>(null),[uploading,setUploading]=useState(false),[uploadError,setUploadError]=useState("");
   const indices = Array.from(new Set(Array.from(body.matchAll(/\{\{(\d+)\}\}/g),m=>Number(m[1])))).sort((a,b)=>a-b);
   const badIndices = indices.some((n,i)=>n!==i+1);
   async function submit(e:FormEvent<HTMLFormElement>) {
     e.preventDefault(); const data = new FormData(e.currentTarget);
-    if(await run("templates",{name:data.get("name"),category:data.get("category"),language:data.get("language"),body,examples:indices.map(n=>data.get("example"+n))},"Template submitted to Meta.")) close();
+    setUploadError("");setUploading(true);
+    try {
+      const imageHandle=image?await uploadImage(image,"example",String(data.get("appId")||"")):undefined;
+      if(await run("templates",{name:data.get("name"),category,language:data.get("language"),body,examples:indices.map(n=>data.get("example"+n)),imageHandle},"Template submitted to Meta.")) close();
+    } catch(e) {setUploadError(e instanceof Error?e.message:"Image upload failed.");} finally {setUploading(false);}
   }
   return <form className="panel form-card" onSubmit={submit}>
     <div className="card-head"><h2>New text template</h2><button className="quiet" type="button" onClick={close}>Close</button></div>
     <label>Template name<input name="name" placeholder="order_ready" pattern="[a-z0-9_]+" title="Use lowercase letters, digits and underscores." maxLength={512} required /></label>
-    <div className="fields"><label>Category<select name="category"><option value="UTILITY">Utility</option><option value="MARKETING">Marketing</option></select></label>
+    <div className="fields"><label>Category<select name="category" value={category} onChange={e=>{setCategory(e.target.value);setImage(null);}}><option value="UTILITY">Utility</option><option value="MARKETING">Marketing</option></select></label>
     <label>Language code<input name="language" defaultValue="en_US" required placeholder="en_US" /></label></div>
     <label>Message body<textarea rows={4} value={body} maxLength={1024} onChange={e=>setBody(e.target.value)} placeholder="Hi {{1}}, your order {{2}} is ready for pickup." required /></label>
+    {category==="MARKETING"&&<><label>Example header image (optional)<input type="file" accept="image/jpeg,image/png" onChange={e=>setImage(e.target.files?.[0]||null)}/></label>{image&&<label>Meta App ID<input name="appId" inputMode="numeric" pattern="[0-9]+" required /><small>Find this in your Meta developer app's basic settings.</small></label>}</>}
+    {uploadError&&<p role="alert" className="error-text">{uploadError}</p>}
     <small>Add numbered fields such as {"{{1}}"} to personalize each message.</small>
     {badIndices && <p role="alert">Number the fields consecutively from 1.</p>}
     {indices.map(n=><label key={n}>Example for field {n}<input name={"example"+n} required /></label>)}
-    <button className="primary" disabled={busy||badIndices}>Submit to Meta</button>
+    <button className="primary" disabled={busy||uploading||badIndices}>{uploading?"Uploading…":"Submit to Meta"}</button>
   </form>;
 }
 
 export function Compose({state,run,busy,go}:{state:DeskState;run:Action;busy:boolean;go:(view:"Contacts"|"Templates"|"Setup"|"Messages")=>void}) {
   const [recipientType,setRecipientType]=useState<"contact"|"group">("contact"),[contactId,setContact] = useState(""),[groupId,setGroup] = useState(""), [templateId,setTemplate] = useState(""), [parameters,setParams] = useState<string[]>([]);
   const [sent,setSent]=useState(false), [reviewed,setReviewed]=useState(false);
+  const [image,setImage]=useState<File|null>(null),[uploading,setUploading]=useState(false),[uploadError,setUploadError]=useState("");
+  const [imagePreview,setImagePreview]=useState("");
+  const imageId=useRef("");
+  useEffect(()=>{if(!image){setImagePreview("");return;}const url=URL.createObjectURL(image);setImagePreview(url);return()=>URL.revokeObjectURL(url);},[image]);
   const requestId=useRef("");
   const contacts=state.contacts.filter(c=>c.consent), templates=state.templates.filter(t=>t.supported&&t.status.toUpperCase()==="APPROVED");
   const contact=contacts.find(c=>c.id===contactId), group=state.groups.find(g=>g.id===groupId), template=templates.find(t=>t.id===templateId);
@@ -70,16 +88,20 @@ export function Compose({state,run,busy,go}:{state:DeskState;run:Action;busy:boo
   const preview=template?.body.replace(/\{\{(\d+)\}\}/g,(match,n)=>values[Number(n)-1]||match);
   const configured=state.setup.hasToken&&!!state.setup.phoneNumberId&&!!state.setup.accountId;
   const targetReady=recipientType==="contact"?!!contact:!!group&&eligibleGroupMembers.length>0;
-  const ready=configured && targetReady && !!template && values.every(v=>v.trim());
-  function reset() {requestId.current="";setSent(false);setReviewed(false);}
+  const ready=configured && targetReady && !!template && (!template.imageHeader||!!image) && values.every(v=>v.trim());
+  function reset() {requestId.current="";imageId.current="";setSent(false);setReviewed(false);setUploadError("");}
   async function submit(e:FormEvent) {
     e.preventDefault(); if(!ready||busy||sent) return;
     if(!reviewed) {setReviewed(true);return;}
     requestId.current ||= crypto.randomUUID();
-    const result=recipientType==="contact"
-      ? await run("send",{contactId,templateId,parameters:values,requestId:requestId.current},"Send request recorded. Check Messages for its status.")
-      : await run("send-group",{groupId,templateId,parameters:values,batchId:requestId.current},"Group send finished.");
-    if(result) setSent(true);
+    setUploading(true);
+    try {
+      if(template?.imageHeader && image && !imageId.current) imageId.current=await uploadImage(image,"message");
+      const result=recipientType==="contact"
+        ? await run("send",{contactId,templateId,parameters:values,requestId:requestId.current,imageId:imageId.current},"Send request recorded. Check Messages for its status.")
+        : await run("send-group",{groupId,templateId,parameters:values,batchId:requestId.current,imageId:imageId.current},"Group send finished.");
+      if(result) setSent(true);
+    } catch(e) {setUploadError(e instanceof Error?e.message:"Image upload failed.");} finally {setUploading(false);}
   }
   return <div className="compose-grid"><form onSubmit={submit} className="panel form-card">
     <div className="card-head"><h2>Message details</h2></div>
@@ -95,10 +117,12 @@ export function Compose({state,run,busy,go}:{state:DeskState;run:Action;busy:boo
       {group&&eligibleGroupMembers.length===0&&<small>This group has no opted-in contacts, so it cannot receive a send.</small>}
     </>}
     <label>Approved template<select value={templateId} onChange={e=>{reset();setTemplate(e.target.value);setParams([]);}} disabled={busy||sent}><option value="">Choose a template</option>{templates.map(t=><option key={t.id} value={t.id}>{t.name} · {t.language}</option>)}</select></label>
+    {template?.imageHeader&&<label>Message image<input type="file" accept="image/jpeg,image/png" disabled={busy||uploading||sent} onChange={e=>{reset();setImage(e.target.files?.[0]||null);}} required /><small>Choose a JPEG or PNG image under 5 MB.</small></label>}
+    {uploadError&&<p role="alert" className="error-text">{uploadError}</p>}
     {!templates.length&&<small>Sync or create an approved text template. <button type="button" className="link" onClick={()=>go("Templates")}>Templates →</button></small>}
     {values.map((v,i)=><label key={i}>Field {i+1}<input value={v} disabled={busy||sent} onChange={e=>{reset();setParams(values.map((s,j)=>j===i?e.target.value:s));}} required /></label>)}
     {reviewed&&!sent&&<div className="hint">{recipientType==="contact"?<>Send this WhatsApp message to <strong>{contact?.name}</strong> at {contact?.phone}?</>:<>Send this WhatsApp message to <strong>{eligibleGroupMembers.length} opted-in contacts</strong> in “{group?.name}”?</>}</div>}
-    {sent?<button type="button" className="primary" onClick={()=>go("Messages")}>View message history →</button>:<button className="primary" disabled={busy||!ready}>{busy?"Working…":reviewed?"Confirm and send":"Review message"}</button>}
-  </form><aside className="panel preview-panel"><h2>Message preview</h2><div className="preview-chat"><div className="conversation-label"><span className="brand-mark mini">B</span>Mancherikalam BigBazar</div><div className="chat-bubble">{preview||"Select a template to preview the message here."}</div></div>{template&&<small>{template.name} · {template.language}</small>}</aside></div>;
+    {sent?<button type="button" className="primary" onClick={()=>go("Messages")}>View message history →</button>:<button className="primary" disabled={busy||uploading||!ready}>{busy||uploading?"Working…":reviewed?"Confirm and send":"Review message"}</button>}
+  </form><aside className="panel preview-panel"><h2>Message preview</h2><div className="preview-chat"><div className="conversation-label"><span className="brand-mark mini">B</span>Mancherikalam BigBazar</div><div className="chat-bubble">{template?.imageHeader&&imagePreview&&<img src={imagePreview} alt="Selected message header" style={{display:"block",maxWidth:"100%",maxHeight:240,marginBottom:10}}/>}{preview||"Select a template to preview the message here."}{template?.footer&&<small style={{display:"block",marginTop:10}}>{template.footer}</small>}</div>{!!template?.quickReplies.length&&<div aria-label="Customer reply choices" style={{display:"grid",gap:6,marginTop:10}}>{template.quickReplies.map((text,index)=><div className="secondary" style={{textAlign:"center",overflowWrap:"anywhere"}} key={index}>{text}</div>)}</div>}</div>{template&&<small>{template.name} · {template.language}</small>}</aside></div>;
 }
 

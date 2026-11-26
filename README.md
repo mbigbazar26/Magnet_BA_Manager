@@ -16,9 +16,11 @@ Double-click `Connect Meta.cmd` to enter the System User access token. The input
 4. Under **Compose**, choose one opted-in contact or a contact group and an approved supported template. Group sends include only opted-in contacts; other group members are skipped. Fill each numbered field, review the recipient count and message preview, and confirm the send. The desk sends one message per eligible contact and reports accepted, not-confirmed, and skipped counts. Meta may charge for eligible messages.
 5. Open **Messages** to inspect recent outgoing and incoming messages. The desk shows the most recent 250 messages. A webhook is required for delivery updates and incoming messages.
 
-The current version sends body-only text templates, including numbered positional fields. Templates with headers, buttons, media or other components may sync but cannot be sent from the desk. Group sends are submitted as individual messages to opted-in members. Scheduling and automatic order triggers are future work.
+The desk supports text templates and templates with an image header and a text body, including numbered positional fields. For a new marketing image template, select a JPEG or PNG example and enter the Meta App ID when submitting it for review. Once approved and synced, select the template in Compose and choose the image to send; the image is previewed before confirmation. Images must be smaller than 5 MB. Meta may require a suitable access token for the example upload. Templates with other headers, buttons or components are not supported for sending. Group sends are submitted as individual messages to opted-in members. Scheduling and automatic order triggers are future work.
 
 ## Message and template statuses
+
+Synced templates with an image header, a text body, an optional static footer, and quick-reply buttons can be selected in Compose once approved. The preview includes the customer reply choices. Other button types remain unsupported. Quick-reply responses appear through the messages webhook; consent changes from those buttons are not automated yet.
 
 **Pending** means the template has been submitted and awaits Meta's review. **Approved** makes a supported template selectable for sending. **Rejected** requires attention in WhatsApp Manager. **Unavailable** means a previous local template was not present in the latest completed sync.
 
@@ -31,6 +33,8 @@ The local `.env` file contains the database URL, operator password, session secr
 The web server listens on `127.0.0.1:3000` and the bundled PostgreSQL server on `127.0.0.1:55432`. The operator password is stored in `.local/operator-password.txt`. Protect access to this folder because it also contains local customer and message data. The generated PostgreSQL data directory is `.local/postgres`. The project uses Next.js, React, TypeScript, Prisma and PostgreSQL.
 
 ## Troubleshooting
+
+The local database uses UTF-8 to store emojis and multilingual messages. The November 26 migration preserves the previous database and writes a table backup, the original connection configuration, and verification results under `.local/backups/utf8-*`. These backups contain private customer data and secrets; keep them local. The active database name is set in `.env`. Do not switch back after new writes without reconciling the newer data.
 
 - **PostgreSQL lock file or port already in use** — another copy may be running. Stop the existing desk from its terminal before starting another. Do not delete `postmaster.pid` while PostgreSQL is running.
 - **Stop Desk.cmd says the running copy is an older version** — press Ctrl+C once in the Start Desk terminal, wait for PostgreSQL to stop, and start the desk again. Subsequent runs can be stopped with `Stop Desk.cmd`.

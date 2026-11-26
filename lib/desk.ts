@@ -4,7 +4,7 @@ import { db } from '@/lib/db';
 import { credentials, DeskError, graph, GraphError, setup } from './meta';
 
 type Input = Record<string, unknown>;
-type Component = { type: string; text?: string; example?: { body_text: string[][] } };
+type Component = { type: string; format?: string; text?: string; buttons?: {type:string;text:string}[]; example?: { body_text?: string[][]; header_handle?: string[] } };
 type MetaTemplate = { id: string; name: string; language: string; category: string; status: string; components: Component[] };
 
 function field(value: unknown, label: string, max = 256): string {
@@ -19,7 +19,7 @@ function values(raw: unknown, expected: number): string[] {
   return raw.map((v) => field(v, 'template field value', 1024));
 }
 
-// Body-only templates with positional parameters are editable and sendable in v1.
+// Only consecutive positional body parameters are supported.
 function parameterCount(body: string): number {
   const pattern = /\{\{([1-9]\d*)\}\}/g;
   const remaining = body.replace(pattern, '');
@@ -31,8 +31,19 @@ function parameterCount(body: string): number {
 function summarize(t: Template) {
   const parameters = parameterCount(t.body);
   const components = t.components as unknown as Component[];
-  const supported = parameters >= 0 && components.length === 1 && components[0].type === 'BODY' && !!t.body;
-  return { id:t.id, name:t.name, language:t.language, category:t.category, body:t.body, status:t.status, parameters, supported };
+  const imageHeader = components.some(c=>c.type==='HEADER' && c.format==='IMAGE');
+  const buttonComponents=components.filter(c=>c.type==='BUTTONS');
+  const quickReplies=buttonComponents.flatMap(c=>c.buttons??[]);
+  const footer=components.find(c=>c.type==='FOOTER')?.text || '';
+  const supported = parameters >= 0 && !!t.body
+    && components.filter(c=>c.type==='BODY').length===1
+    && components.filter(c=>c.type==='HEADER').length<=1
+    && components.filter(c=>c.type==='FOOTER').length<=1
+    && buttonComponents.length<=1
+    && (!buttonComponents.length || quickReplies.length>0 && quickReplies.length<=10)
+    && quickReplies.every(b=>b.type==='QUICK_REPLY' && typeof b.text==='string' && !!b.text)
+    && components.every(c=>c.type==='BODY' || c.type==='BUTTONS' || (c.type==='HEADER' && c.format==='IMAGE') || (c.type==='FOOTER' && !!c.text && !/[{}]/.test(c.text)));
+  return { id:t.id, name:t.name, language:t.language, category:t.category, body:t.body, status:t.status, parameters, supported, imageHeader, quickReplies:quickReplies.map(b=>b.text),footer };
 }
 
 export async function state() {
@@ -139,7 +150,9 @@ export async function submitTemplate(input: Input) {
   const count = parameterCount(body);
   if (count < 0) throw new DeskError('Use numbered fields beginning at {{1}}, without gaps.');
   const examples = values(input.examples ?? [],count);
-  const components: Component[] = [{type:'BODY',text:body,...(count ? {example:{body_text:[examples]}} : {})}];
+  const imageHandle = input.imageHandle === undefined ? '' : field(input.imageHandle,'image upload handle',4096);
+  if (imageHandle && category !== 'MARKETING') throw new DeskError('Image upload is available for marketing templates.');
+  const components: Component[] = [...(imageHandle ? [{type:'HEADER',format:'IMAGE',example:{header_handle:[imageHandle]}}] : []),{type:'BODY',text:body,...(count ? {example:{body_text:[examples]}} : {})}];
   const existing = await db.template.findUnique({where:{name_language:{name,language}}});
   if (existing && existing.status !== 'UNAVAILABLE') throw new DeskError('A template with this name and language already exists.',409);
   const response = await graph<{id:string;status?:string;category?:string}>(credentials().accountId + '/message_templates', {name,language,category,components});
@@ -157,8 +170,10 @@ export async function send(input: Input) {
   ]);
   if (!recipient.consent) throw new DeskError('This contact has not opted in.',409);
   const summary = summarize(t);
-  if (t.status !== 'APPROVED' || !summary.supported) throw new DeskError('Choose an approved text template.',409);
+  if (t.status !== 'APPROVED' || !summary.supported) throw new DeskError('Choose an approved supported template.',409);
   const parameters = values(input.parameters ?? [],summary.parameters);
+  const imageId = summary.imageHeader ? field(input.imageId,'image media ID',64) : '';
+  if (imageId && !/^\d+$/.test(imageId)) throw new DeskError('Invalid image media ID.');
   const body = t.body.replace(/\{\{(\d+)\}\}/g, (_,n) => parameters[Number(n)-1]);
   const existing = await db.message.findUnique({where:{requestId}});
   if (existing) {
@@ -171,9 +186,11 @@ export async function send(input: Input) {
     const result = await graph<{messages?:{id:string}[]}>(config.phoneNumberId + '/messages', {
       messaging_product:'whatsapp', recipient_type:'individual', to:recipient.phone.slice(1),
       biz_opaque_callback_data:outbound.id, type:'template',
-      template:{name:t.name, language:{code:t.language}, ...(parameters.length ? {components:[{
-        type:'body', parameters:parameters.map(text=>({type:'text',text})),
-      }]} : {})},
+      template:{name:t.name, language:{code:t.language}, ...((parameters.length || imageId || summary.quickReplies.length) ? {components:[
+        ...(imageId ? [{type:'header',parameters:[{type:'image',image:{id:imageId}}]}] : []),
+        ...(parameters.length ? [{type:'body', parameters:parameters.map(text=>({type:'text',text}))}] : []),
+        ...summary.quickReplies.map((_,index)=>({type:'button',sub_type:'quick_reply',index:String(index),parameters:[{type:'payload',payload:'desk_reply:'+outbound.id+':'+index}]})),
+      ]} : {})},
     });
     if (!result.messages?.[0]?.id) throw new GraphError('Meta did not return a message ID.',true);
     metaId = result.messages[0].id;

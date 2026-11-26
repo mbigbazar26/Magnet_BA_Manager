@@ -6,16 +6,29 @@ import EmbeddedPostgres from 'embedded-postgres'
 initialize()
 const stopRequest = '.local/stop-request'
 const pidFile = '.local/desk.pid'
-fs.rmSync(stopRequest, {force:true})
-fs.writeFileSync(pidFile, String(process.pid), {encoding:'utf8', mode:0o600})
+// Claim the instance before touching another instance's control files.
+try {
+ const previous=Number(fs.readFileSync(pidFile,'utf8'))
+ if (Number.isInteger(previous) && previous>0) {
+   let alive=true
+   try {process.kill(previous,0)} catch(e) {if(e.code==='ESRCH')alive=false;else throw e}
+   if(alive) {console.error('The desk is already running. Use Stop Desk.cmd before restarting or rebuilding.');process.exit(1)}
+ }
+ fs.unlinkSync(pidFile)
+} catch(e) {if(e.code!=='ENOENT')throw e}
+fs.writeFileSync(pidFile,String(process.pid),{flag:'wx',encoding:'utf8',mode:0o600})
+fs.rmSync(stopRequest,{force:true})
 process.env.NEXT_TELEMETRY_DISABLED ??= '1'
 let pg
-if (process.env.LOCAL_POSTGRES==='1') {
+let pgStarted=false
+async function startDatabase() {
+ if (process.env.LOCAL_POSTGRES!=='1') return
  const url=new URL(process.env.DATABASE_URL)
- pg=new EmbeddedPostgres({databaseDir:'.local/postgres',port:Number(url.port),user:url.username,password:url.password,persistent:true,authMethod:'scram-sha-256',postgresFlags:['-h','127.0.0.1'],onLog:message=>console.log(String(message).trimEnd())})
+ pg=new EmbeddedPostgres({databaseDir:'.local/postgres',port:Number(url.port),user:url.username,password:url.password,persistent:true,authMethod:'scram-sha-256',initdbFlags:['--encoding=UTF8','--locale=C'],postgresFlags:['-h','127.0.0.1'],onLog:message=>console.log(String(message).trimEnd())})
  if (!fs.existsSync('.local/postgres/PG_VERSION')) await pg.initialise()
  try {
    await pg.start()
+   pgStarted=true
  } catch (error) {
    throw new Error('Could not start local PostgreSQL. Check the database output above or close another running copy of the desk.', {cause:error})
  }
@@ -23,6 +36,7 @@ if (process.env.LOCAL_POSTGRES==='1') {
 let active
 let stopWatcher
 async function run(script,args) {
+ if(closing) throw Error('Desk is stopping.')
  active=spawn(process.execPath,[script,...args],{stdio:'inherit',windowsHide:true})
  await new Promise((resolve,reject)=>{active.once('error',reject);active.once('exit',code=>code===0?resolve():reject(Error('Process exited '+code)))})
 }
@@ -41,7 +55,7 @@ async function stop(code) {
      await Promise.race([exited,new Promise(resolve=>setTimeout(resolve,3000))])
    }
  }
-  if (pg && process.platform === 'win32') {
+  if (pgStarted && process.platform === 'win32') {
     const pgCtl = 'node_modules/@embedded-postgres/windows-x64/native/bin/pg_ctl.exe'
     await promisify(execFile)(pgCtl, ['-D', '.local/postgres', '-m', 'fast', '-w', 'stop'], {windowsHide:true})
       .catch(() => {
@@ -49,15 +63,16 @@ async function stop(code) {
           console.error('PostgreSQL shutdown may still be in progress.')
         }
       })
-  } else if (pg) {
+  } else if (pgStarted) {
     await pg.stop()
   }
  fs.rmSync(stopRequest, {force:true})
- fs.rmSync(pidFile, {force:true})
+ if (fs.existsSync(pidFile) && fs.readFileSync(pidFile,'utf8')===String(process.pid)) fs.rmSync(pidFile,{force:true})
  process.exit(code)
 }
 process.on('SIGINT',()=>stop(0));process.on('SIGTERM',()=>stop(0))
 try {
+ await startDatabase()
  stopWatcher=setInterval(()=>{
    if (fs.existsSync(stopRequest)) void stop(0)
  },500)
@@ -67,6 +82,7 @@ try {
    await run('node_modules/next/dist/bin/next',['build','--webpack'])
  }
  await run('node_modules/next/dist/bin/next',['start','-H','127.0.0.1','-p','3000'])
+ await stop(0)
 } catch (error) {
   if (!closing && active?.exitCode !== 130) {
     console.error(error instanceof Error ? error.message : String(error))
