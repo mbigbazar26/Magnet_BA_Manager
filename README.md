@@ -4,7 +4,7 @@ The desk is a local web application for managing WhatsApp contacts, submitting t
 
 ## Quick start
 
-Open `E:\WindowsDevWorkspace\Magnet_BA_Manager` in File Explorer and double-click `Start Desk.cmd`. Keep the window open while using the desk. Visit http://127.0.0.1:3000 and sign in using the password stored in `.local/operator-password.txt` in the project folder. To stop the desk, press Ctrl+C in the window running it.
+Open `E:\WindowsDevWorkspace\Magnet_BA_Manager` in File Explorer and double-click `Start Desk.cmd`. Keep the window open while using the desk. Visit http://127.0.0.1:3000 and sign in using the password stored in `.local/operator-password.txt` in the project folder. To stop the desk, double-click `Stop Desk.cmd`; you can also press Ctrl+C in the Start Desk window.
 
 Double-click `Connect Meta.cmd` to enter the System User access token. The input is hidden. Press Enter at either prompt to keep its existing value. The app secret is needed to validate incoming webhooks. Restart the desk after changing credentials, then choose **Setup > Check connection**.
 
@@ -33,6 +33,7 @@ The web server listens on `127.0.0.1:3000` and the bundled PostgreSQL server on 
 ## Troubleshooting
 
 - **PostgreSQL lock file or port already in use** — another copy may be running. Stop the existing desk from its terminal before starting another. Do not delete `postmaster.pid` while PostgreSQL is running.
+- **Stop Desk.cmd says the running copy is an older version** — press Ctrl+C once in the Start Desk terminal, wait for PostgreSQL to stop, and start the desk again. Subsequent runs can be stopped with `Stop Desk.cmd`.
 - **Unexpected character in META_ACCESS_TOKEN** — run `Connect Meta.cmd` again and paste the token alone. The stars on screen hide the input. When it says `Saved`, restart the desk.
 - **Meta connection fails** — check the token is current, the System User has the appropriate app and WhatsApp permissions, and the configured IDs refer to the intended account. Do not paste the token into chat.
 - **A template remains pending** — Meta controls review. Sync again later and inspect the template in WhatsApp Manager if it is rejected.
