@@ -5,5 +5,5 @@ export default async function Login({searchParams}:{searchParams:Promise<{error?
  <small>MANCHERIKALAM BIGBAZAR</small><h1 style={{margin:0}}>Messaging desk</h1>
  <label htmlFor="password">Operator password</label><input id="password" name="password" type="password" autoComplete="current-password" required style={{padding:12,border:'1px solid #859e90',borderRadius:6}}/>
  {error && <span role="alert">Check the operator password and try again.</span>}
- <button style={{background:'#175638',color:'white',padding:13,border:0,borderRadius:6}}>Sign in</button><small>Your local password is in the app folder under .local/operator-password.txt.</small></form></main>
+ <button style={{background:'#175638',color:'white',padding:13,border:0,borderRadius:6}}>Sign in</button><small>{process.env.LOCAL_POSTGRES==='0'?'Use the operator password configured for this desk.':'Your local password is in the app folder under .local/operator-password.txt.'}</small></form></main>
 }

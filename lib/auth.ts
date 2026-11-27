@@ -21,5 +21,13 @@ export function isAuthorized(request: Request) {
 }
 export function isSameOrigin(request: Request) {
   const origin = request.headers.get('origin')
+  const configured = process.env.APP_ORIGIN || process.env.RENDER_EXTERNAL_URL
+  if (configured) {
+    try { return !!origin && new URL(origin).origin === new URL(configured).origin } catch { return false }
+  }
   try { return !!origin && new URL(origin).host === request.headers.get('host') } catch { return false }
+}
+
+export function publicOrigin(request: Request) {
+  return new URL(process.env.APP_ORIGIN || process.env.RENDER_EXTERNAL_URL || request.url).origin
 }

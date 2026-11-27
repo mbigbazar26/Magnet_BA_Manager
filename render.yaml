@@ -1,0 +1,39 @@
+# Neon is managed separately; this Blueprint creates only a free web service.
+services:
+  - type: web
+    name: magnet-ba-manager
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run start:cloud
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: LOCAL_POSTGRES
+        value: "0"
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_UNPOOLED
+        sync: false
+      - key: OPERATOR_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: META_GRAPH_VERSION
+        value: v25.0
+      - key: META_PHONE_NUMBER_ID
+        value: "1524500964085667"
+      - key: META_ACCOUNT_ID
+        value: "1007794105719686"
+      - key: META_ACCESS_TOKEN
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_VERIFY_TOKEN
+        generateValue: true

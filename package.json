@@ -7,6 +7,8 @@
     "local": "node scripts/local.mjs",
     "build": "prisma generate && next build --webpack",
     "start": "next start -H 127.0.0.1",
+    "start:cloud": "node scripts/cloud.mjs",
+    "test:cloud": "node --test scripts/cloud.test.mjs scripts/auth-cloud.test.mjs",
     "relay": "node scripts/webhook-relay.mjs",
     "db:deploy": "prisma migrate deploy"
   },

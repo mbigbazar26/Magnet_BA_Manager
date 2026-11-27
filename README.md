@@ -1,5 +1,7 @@
 # BigBazar Messaging Desk
 
+For the Render Free + Neon testing deployment, follow [DEPLOY_RENDER_NEON.md](DEPLOY_RENDER_NEON.md). The Windows launcher continues to run the local version; the cloud service uses `npm run start:cloud`.
+
 The desk is a local web application for managing WhatsApp contacts, submitting text templates, and sending approved template messages. It connects to Meta's WhatsApp Cloud API from your computer. Your computer must be connected to the internet for Meta operations.
 
 ## Quick start
