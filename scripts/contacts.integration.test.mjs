@@ -22,7 +22,7 @@ test('contact import, sending eligibility and signed reply processing in a dispo
     assert.equal(migration.status,0,'Migrations must apply to an empty local test database.');
     const {db}=await import('../lib/db.ts');client=db;
     const {commitImport}=await import('../lib/contact-import.ts');
-    const {saveConsentSettings,send,sendGroup,contact,deleteGroup}=await import('../lib/desk.ts');
+    const {saveConsentSettings,send,sendGroup,contact,deleteGroup,state}=await import('../lib/desk.ts');
     const {processCallbacks}=await import('../lib/webhook.ts');
     const first=await db.contactGroup.create({data:{name:'Existing group'}});
     const second=await db.contactGroup.create({data:{name:'Imported group'}});
@@ -33,16 +33,24 @@ test('contact import, sending eligibility and signed reply processing in a dispo
     const template=await db.template.create({data:{name:'offers_optin_template',language:'ml',body:'Would you like offers?',category:'MARKETING',status:'APPROVED',components:[{type:'BODY',text:'Would you like offers?'},{type:'BUTTONS',buttons:[{type:'QUICK_REPLY',text:no},{type:'QUICK_REPLY',text:yes}]}]}});
     await saveConsentSettings({templateId:template.id,acceptButton:1,declineButton:0,acceptWords:['YES PLEASE'],declineWords:['NO THANKS']});
     const automatic=await db.contactGroup.findUniqueOrThrow({where:{systemKey:'OPTED_IN'}});
+    const optedOut=await db.contactGroup.findUniqueOrThrow({where:{systemKey:'OPTED_OUT'}});
+    const awaiting=await db.contactGroup.findUniqueOrThrow({where:{systemKey:'PENDING'}});
     const inAutomatic=id=>db.contactGroupMembership.count({where:{contactId:id,groupId:automatic.id}});
+    async function expectConsentGroup(contactId,status) {
+      const memberships=await db.contactGroupMembership.findMany({where:{contactId,group:{systemKey:{not:null}}},include:{group:true}});
+      assert.deepEqual(memberships.map(m=>m.group.systemKey),[status]);
+    }
 
     await t.test('automatic membership follows manual consent and preserves unrelated custom groups',async()=>{
       await contact({name:'Manual opt-in',phone:'+919876543217',consentStatus:'OPTED_IN',groupIds:[first.id]});
       const manual=await db.contact.findUniqueOrThrow({where:{phone:'+919876543217'}});
       assert.equal(await inAutomatic(manual.id),1);
+      await expectConsentGroup(manual.id,'OPTED_IN');
       await contact({id:manual.id,name:manual.name,phone:manual.phone,consentStatus:'OPTED_IN',groupIds:[second.id]});
       assert.equal(await inAutomatic(manual.id),1,'editing custom groups preserves automatic membership');
       await contact({id:manual.id,name:manual.name,phone:manual.phone,consentStatus:'OPTED_OUT',groupIds:[second.id]});
       assert.equal(await inAutomatic(manual.id),0);
+      await expectConsentGroup(manual.id,'OPTED_OUT');
       assert.equal(await db.contactGroupMembership.count({where:{contactId:manual.id,groupId:second.id}}),1);
       await assert.rejects(deleteGroup({id:automatic.id}),/Automatic groups/);
       await assert.rejects(contact({id:manual.id,name:manual.name,phone:manual.phone,consentStatus:'OPTED_IN',groupIds:[automatic.id]}),/custom groups/);
@@ -56,9 +64,10 @@ test('contact import, sending eligibility and signed reply processing in a dispo
       assert.equal(saved.created,1);assert.equal(saved.existing,1);assert.equal(saved.memberships,4);
       const again=await commitImport(db,rows,[second.id,third.id]);assert.equal(again.created,0);assert.equal(again.memberships,0);
       const old=await db.contact.findUniqueOrThrow({where:{id:existing.id},include:{groups:true}});
-      assert.equal(old.name,'Keep name');assert.equal(old.consentStatus,'OPTED_OUT');assert.equal(old.groups.length,3);
+      assert.equal(old.name,'Keep name');assert.equal(old.consentStatus,'OPTED_OUT');assert.equal(old.groups.filter(m=>m.groupId!==optedOut.id).length,3);
       const fresh=await db.contact.findUniqueOrThrow({where:{phone:rows[1].phone}});assert.equal(fresh.consentStatus,'PENDING');assert.equal(fresh.consent,false);
       assert.equal(await inAutomatic(fresh.id),0,'imported pending contacts are not added before agreeing');
+      await expectConsentGroup(fresh.id,'PENDING');
       await assert.rejects(commitImport(db,[{row:4,name:'Rollback',phone:'+919876543212'}],['nonexistent-group']),/no longer exists/);
       assert.equal(await db.contact.count({where:{phone:'+919876543212'}}),0);
     });
@@ -78,7 +87,8 @@ test('contact import, sending eligibility and signed reply processing in a dispo
       assert.equal(await db.contact.count({where:{phone:'+919876543218'}}),0);
       const commit=await POST(request('commit'));assert.equal(commit.status,200);assert.equal((await commit.json()).created,1);
       const saved=await db.contact.findUniqueOrThrow({where:{phone:'+919876543218'},include:{groups:true}});
-      assert.equal(saved.name,'Endpoint customer');assert.equal(saved.consentStatus,'PENDING');assert.equal(saved.groups[0].groupId,third.id);
+      assert.equal(saved.name,'Endpoint customer');assert.equal(saved.consentStatus,'PENDING');assert.ok(saved.groups.some(m=>m.groupId===third.id));
+      await expectConsentGroup(saved.id,'PENDING');
     });
 
     const recipient=await db.contact.findUniqueOrThrow({where:{phone:rows[1].phone}});
@@ -110,6 +120,7 @@ test('contact import, sending eligibility and signed reply processing in a dispo
       assert.equal((await POST(new Request('http://localhost/api/webhook',{method:'POST',headers:{'x-hub-signature-256':signature},body}))).status,200);
       assert.equal((await db.contact.findUniqueOrThrow({where:{id:recipient.id}})).consentStatus,'OPTED_IN');
       assert.equal(await inAutomatic(recipient.id),1,'Yes adds the customer automatically');
+      await expectConsentGroup(recipient.id,'OPTED_IN');
       const broadcast=await sendGroup({groupId:automatic.id,batchId:randomUUID(),templateId:template.id,parameters:[]});
       assert.equal(broadcast.sent,1);assert.equal(broadcast.eligible,1);
       await processCallbacks(event('in.no','button',{text:no,payload:`desk_reply:${outgoing.id}:0`},at+2),'456');
@@ -117,6 +128,7 @@ test('contact import, sending eligibility and signed reply processing in a dispo
       await processCallbacks(event('in.old.yes','button',{text:yes,payload:`desk_reply:${outgoing.id}:1`},at+1),'456');
       assert.equal((await db.contact.findUniqueOrThrow({where:{id:recipient.id}})).consentStatus,'OPTED_OUT');
       assert.equal(await inAutomatic(recipient.id),0,'No removes the customer and old or duplicate Yes cannot re-add them');
+      await expectConsentGroup(recipient.id,'OPTED_OUT');
       assert.equal(await db.consentEvent.count({where:{contactId:recipient.id}}),2);
       await assert.rejects(send({contactId:recipient.id,templateId:template.id,parameters:[],requestId:randomUUID()}),/not opted in/);
     });
@@ -141,12 +153,28 @@ test('contact import, sending eligibility and signed reply processing in a dispo
       await processCallbacks(event('in.unmapped','text',{body:'hello there'},at+40,undefined,current.metaId),'456');
       assert.equal((await db.contact.findUniqueOrThrow({where:{id:recipient.id}})).consentStatus,'PENDING');
       assert.equal(await inAutomatic(recipient.id),0,'returning to awaiting removes automatic membership');
+      await expectConsentGroup(recipient.id,'PENDING');
       await processCallbacks(event('in.typed','text',{body:'  YES   PLEASE '},at+41,undefined,current.metaId),'456');
       assert.equal((await db.contact.findUniqueOrThrow({where:{id:recipient.id}})).consentStatus,'OPTED_IN');
       assert.equal(await inAutomatic(recipient.id),1,'exact opt-in phrases also add membership');
       await processCallbacks(event('in.stop','text',{body:'STOP'},at+42,undefined,''),'456');
       assert.equal((await db.contact.findUniqueOrThrow({where:{id:recipient.id}})).consentStatus,'OPTED_OUT');
       assert.equal(await inAutomatic(recipient.id),0,'STOP removes membership');
+      await expectConsentGroup(recipient.id,'OPTED_OUT');
+    });
+    await t.test('the three automatic groups appear together, and opted-out or awaiting customers cannot receive offers',async()=>{
+      const snapshot=await state();
+      assert.deepEqual(snapshot.groups.slice(0,3).map(g=>g.name),['Opted-in customers','Opted-out customers','Awaiting response']);
+      const before=graphCalls.length;
+      for(const groupId of [optedOut.id,awaiting.id]) {
+        await assert.rejects(sendGroup({groupId,batchId:randomUUID(),templateId:template.id,parameters:[]}),/no eligible contacts/);
+      }
+      await assert.rejects(sendGroup({groupId:optedOut.id,batchId:randomUUID(),templateId:template.id,parameters:[],purpose:'OPT_IN'}),/no eligible contacts/);
+      assert.equal(graphCalls.length,before);
+      const initial=await sendGroup({groupId:awaiting.id,batchId:randomUUID(),templateId:template.id,parameters:[],purpose:'OPT_IN'});
+      assert.ok(initial.sent>0,'awaiting contacts can receive the configured initial request');
+      const fromDb=await db.contact.findMany({include:{groups:{include:{group:true}}}});
+      for(const c of fromDb)assert.deepEqual(c.groups.filter(m=>m.group.systemKey).map(m=>m.group.systemKey),[c.consentStatus]);
     });
     await t.test('automatic broadcasts derive the audience from current consent even if an old membership is stale',async()=>{
       await db.contactGroupMembership.create({data:{groupId:automatic.id,contactId:existing.id}});

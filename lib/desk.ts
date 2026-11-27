@@ -57,7 +57,11 @@ export async function state() {
   ]);
   return {
     contacts:contacts.map(({groups:memberships,...c})=>({...c,groups:memberships.map(m=>m.group)})),
-    groups:groups.map(({_count,...g})=>({...g,contactCount:_count.contacts})),
+    groups:groups.map(({_count,...g})=>({...g,contactCount:_count.contacts})).sort((a,b)=>{
+      const order=['OPTED_IN','OPTED_OUT','PENDING'];
+      const rank=(key:string|null)=>key&&order.includes(key)?order.indexOf(key):order.length;
+      return rank(a.systemKey)-rank(b.systemKey)||a.name.localeCompare(b.name);
+    }),
     templates:templates.map(summarize), messages, setup:setup(), consentSettings,
   };
 }
@@ -255,8 +259,9 @@ export async function sendGroup(input:Input) {
   const batchId=field(input.batchId,'send reference',40);
   if (!/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(batchId)) throw new DeskError('Invalid send reference.');
   const group=await db.contactGroup.findUniqueOrThrow({where:{id:groupId},include:{contacts:{include:{contact:true}}}});
-  const members=group.systemKey==='OPTED_IN'
-    ? await db.contact.findMany({where:{consent:true,consentStatus:'OPTED_IN'}})
+  const automaticStatus=CONSENT_STATES.find(status=>status===group.systemKey);
+  const members=automaticStatus
+    ? await db.contact.findMany({where:{consent:automaticStatus==='OPTED_IN',consentStatus:automaticStatus}})
     : group.contacts.map(m=>m.contact);
   const contacts=members.sort((a,b)=>a.name.localeCompare(b.name)||a.phone.localeCompare(b.phone));
   const eligible=contacts.filter(c=>eligibleContact(c,input.purpose==='OPT_IN'?'OPT_IN':'STANDARD'));

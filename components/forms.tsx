@@ -27,7 +27,7 @@ export function ContactEditor({ contact, groups, run, busy, close }: {contact?:C
     <label>Customer name<input name="name" defaultValue={contact?.name} autoComplete="off" required maxLength={100} /></label>
     <label>WhatsApp number<input name="phone" type="tel" defaultValue={contact?.phone} readOnly={!!contact} placeholder="+91…" required /></label>
     <label>Offers consent<select value={consentStatus} onChange={e=>setConsentStatus(e.target.value as Contact['consentStatus'])}><option value="PENDING">Awaiting response</option><option value="OPTED_IN">Opted in</option><option value="OPTED_OUT">Opted out</option></select><small>Record opted in only when the customer has agreed to offers. Customer replies update this automatically when reply rules and webhooks are configured.</small></label>
-    <small>Opted-in customers is updated automatically from this contact's consent choice.</small>
+    <small>This contact automatically belongs to Opted-in customers, Opted-out customers, or Awaiting response, based on their consent choice.</small>
     {customGroups.length>0&&<fieldset className="group-picker"><legend>Contact groups</legend>{customGroups.map(g=><label className="check" key={g.id}><input type="checkbox" checked={groupIds.includes(g.id)} onChange={e=>setGroupIds(current=>e.target.checked?[...current,g.id]:current.filter(id=>id!==g.id))}/>{g.name}</label>)}</fieldset>}
     <button className="primary" disabled={busy}>Save contact</button>
   </form>;
@@ -35,6 +35,7 @@ export function ContactEditor({ contact, groups, run, busy, close }: {contact?:C
 
 export function GroupManager({groups,run,busy}:{groups:ContactGroup[];run:Action;busy:boolean}) {
   const [name,setName]=useState("");
+  const automaticDetails:Record<string,string>={OPTED_IN:'Agreed to offers. Available for offer messages.',OPTED_OUT:'Declined or unsubscribed. Offer messages are blocked.',PENDING:'No consent choice yet. Available for the initial opt-in request.'};
   async function submit(e:FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if(await run("groups",{name},"Contact group created.")) setName("");
@@ -42,7 +43,7 @@ export function GroupManager({groups,run,busy}:{groups:ContactGroup[];run:Action
   return <section className="panel group-manager">
     <div className="card-head"><div><h2>Contact groups</h2><small>Contacts can belong to more than one group.</small></div></div>
     <form className="group-create" onSubmit={submit}><label className="sr-only" htmlFor="new-group-name">New group name</label><input id="new-group-name" value={name} onChange={e=>setName(e.target.value)} maxLength={80} placeholder="e.g. Weekend offers" required/><button className="secondary" disabled={busy||!name.trim()}>Create group</button></form>
-    {groups.length>0?<ul className="group-list">{groups.map(g=><li key={g.id}><div><strong>{g.name}</strong><small>{g.contactCount??0} contacts{g.systemKey?' · Automatically updated when customers opt in or out':''}</small></div>{g.systemKey?<span className="badge mint">Automatic</span>:<button className="quiet" type="button" disabled={busy} onClick={()=>{if(window.confirm(`Delete the “${g.name}” group? Contacts will remain in your address book.`))void run("delete-group",{id:g.id},"Contact group deleted.");}}>Delete</button>}</li>)}</ul>:<p className="group-empty">No groups yet. Create one, then assign contacts to it.</p>}
+    {groups.length>0?<ul className="group-list">{groups.map(g=><li key={g.id}><div><strong>{g.name}</strong><small>{g.contactCount??0} contacts</small>{g.systemKey&&<small>{automaticDetails[g.systemKey]||'Updated automatically from consent.'}</small>}</div>{g.systemKey?<span className="badge mint">Automatic</span>:<button className="quiet" type="button" disabled={busy} onClick={()=>{if(window.confirm(`Delete the “${g.name}” group? Contacts will remain in your address book.`))void run("delete-group",{id:g.id},"Contact group deleted.");}}>Delete</button>}</li>)}</ul>:<p className="group-empty">No groups yet. Create one, then assign contacts to it.</p>}
   </section>;
 }
 

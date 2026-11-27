@@ -20,9 +20,15 @@ Select **Preview import** before saving. The preview shows valid, invalid, dupli
 
 The Contacts filters show **Awaiting response**, **Opted in** and **Opted out**, and can be combined with a group filter. A contact's category follows their consent status across all groups.
 
-**Opted-in customers** is a built-in automatic group. A Yes reply adds the customer; a No reply, STOP or UNSUBSCRIBE removes them. Manual consent changes update it too. Existing opted-in contacts are included on upgrade, and an existing group with this name is adopted without changing its ID. Custom groups and their memberships are preserved. The automatic group displays an **Automatic** badge and is managed through consent rather than manual membership or deletion.
+Contacts belong to exactly one of three built-in automatic groups:
 
-In **Compose > A contact group**, select **Opted-in customers** to reach everyone currently opted in with one approved template. Each send rechecks consent, including if a customer opts out during a group campaign. The group updates through a PostgreSQL trigger in the same transaction as the consent change, so it works for webhook replies, manual updates and future import paths. Deployment applies `20261127010000_automatic_opted_in_group`; local and hosted databases each need this migration.
+- **Opted-in customers**: customers who agreed to offers.
+- **Opted-out customers**: customers who declined, replied STOP or unsubscribed.
+- **Awaiting response**: newly imported contacts or customers without a recorded consent choice.
+
+A Yes reply moves the customer to Opted-in customers; a No reply, STOP or UNSUBSCRIBE moves them to Opted-out customers. Manual consent changes move them too. Existing contacts are categorized on upgrade, and groups with these names are adopted without changing their IDs. Custom groups and their memberships are preserved. The three groups display an **Automatic** badge and are managed through consent rather than manual membership or deletion.
+
+In **Compose > A contact group**, select **Opted-in customers** to reach everyone currently opted in with one approved template. Select **Awaiting response** with the **Initial opt-in request** purpose for the configured initial template. Opted-out customers are excluded from sends. Each send rechecks consent, including if a customer opts out during a group campaign. The groups update through a PostgreSQL trigger in the same transaction as the consent change, so this works for webhook replies, manual updates and future import paths. Deployment applies `20261127010000_automatic_opted_in_group` and `20261127020000_automatic_consent_groups`; local and hosted databases each need these migrations.
 
 Under **Initial opt-in message and reply rules**, select the existing approved initial template and map its reply buttons. For `offers_optin_template` in Malayalam, the mapping is:
 
