@@ -12,6 +12,7 @@ function findColumn(headers:string[], aliases:string[]) {
 }
 
 export function ContactImport({state,busy,refresh,close}:{state:DeskState;busy:boolean;refresh:()=>Promise<void>;close:()=>void}) {
+  const customGroups=state.groups.filter(group=>!group.systemKey);
   const [file,setFile]=useState<File|null>(null),[inspection,setInspection]=useState<Inspection|null>(null);
   const [nameColumn,setNameColumn]=useState(-1),[phoneColumn,setPhoneColumn]=useState(-1),[countryCode,setCountryCode]=useState('91');
   const [groupIds,setGroupIds]=useState<string[]>([]),[preview,setPreview]=useState<ImportPreview|null>(null);
@@ -61,7 +62,8 @@ export function ContactImport({state,busy,refresh,close}:{state:DeskState;busy:b
       <div className="fields"><label>Name column<select value={nameColumn} disabled={locked} onChange={e=>{setNameColumn(Number(e.target.value));clearPreview();}}><option value={-1}>Choose a column</option>{inspection.headers.map((header,index)=><option value={index} key={index}>{header}</option>)}</select></label>
       <label>Phone column<select value={phoneColumn} disabled={locked} onChange={e=>{setPhoneColumn(Number(e.target.value));clearPreview();}}><option value={-1}>Choose a column</option>{inspection.headers.map((header,index)=><option value={index} key={index}>{header}</option>)}</select></label></div>
       <label>Default country code<input value={countryCode} inputMode="numeric" maxLength={4} disabled={locked} onChange={e=>{setCountryCode(e.target.value);clearPreview();}} placeholder="91"/><small>Used for local numbers; numbers beginning with + keep their own country code. Leave blank when all numbers include a country code. In Excel, format phone columns as Text.</small></label>
-      <fieldset className="group-picker" disabled={locked}><legend>Add to groups</legend>{state.groups.length?state.groups.map(group=><label className="check" key={group.id}><input type="checkbox" checked={groupIds.includes(group.id)} onChange={e=>{setGroupIds(current=>e.target.checked?[...current,group.id]:current.filter(id=>id!==group.id));clearPreview();}}/>{group.name}</label>):<small>Create a group in Contacts, then select it here. You can also import without groups.</small>}</fieldset>
+      <fieldset className="group-picker" disabled={locked}><legend>Add to groups</legend>{customGroups.length?customGroups.map(group=><label className="check" key={group.id}><input type="checkbox" checked={groupIds.includes(group.id)} onChange={e=>{setGroupIds(current=>e.target.checked?[...current,group.id]:current.filter(id=>id!==group.id));clearPreview();}}/>{group.name}</label>):<small>Create a group in Contacts, then select it here. You can also import without groups.</small>}</fieldset>
+      <small>Customers join Opted-in customers automatically after agreeing to offers.</small>
     </>}
     {error&&<p role="alert" className="error-text">{error}</p>}{result&&<div className="alert good" role="status">{result}</div>}
     {preview&&<>

@@ -82,7 +82,7 @@ export async function contact(input: Input) {
       await tx.contact.update({where:{id},data});
       if (changed) await tx.consentEvent.create({data:{contactId:id,status:consentStatus as string,source:'manual',occurredAt}});
       if (groupIds !== undefined) {
-        await tx.contactGroupMembership.deleteMany({where:{contactId:id}});
+        await tx.contactGroupMembership.deleteMany({where:{contactId:id,group:{systemKey:null}}});
         if (groupIds.length) await tx.contactGroupMembership.createMany({data:groupIds.map(groupId=>({contactId:id,groupId}))});
       }
     });
@@ -98,7 +98,7 @@ async function validateGroupIds(raw:unknown):Promise<string[]> {
   if (!Array.isArray(raw) || raw.length>100) throw new DeskError('Choose up to 100 contact groups.');
   const ids=[...new Set(raw.map(id=>field(id,'group ID',64)))];
   if (ids.length!==raw.length) throw new DeskError('A contact group was selected more than once.');
-  if (ids.length && (await db.contactGroup.count({where:{id:{in:ids}}}))!==ids.length) throw new DeskError('One of the selected groups no longer exists.',404);
+  if (ids.length && (await db.contactGroup.count({where:{id:{in:ids},systemKey:null}}))!==ids.length) throw new DeskError('Choose existing custom groups. Automatic groups follow the contact\'s consent status.',400);
   return ids;
 }
 
@@ -110,7 +110,8 @@ export async function createGroup(input:Input) {
 
 export async function deleteGroup(input:Input) {
   const id=field(input.id,'group ID',64);
-  await db.contactGroup.delete({where:{id}});
+  const removed = await db.contactGroup.deleteMany({where:{id,systemKey:null}});
+  if (!removed.count) throw new DeskError('Automatic groups are managed by consent and cannot be deleted. Refresh if this custom group was already removed.',409);
 }
 
 export async function saveConsentSettings(input:Input) {
@@ -254,7 +255,10 @@ export async function sendGroup(input:Input) {
   const batchId=field(input.batchId,'send reference',40);
   if (!/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(batchId)) throw new DeskError('Invalid send reference.');
   const group=await db.contactGroup.findUniqueOrThrow({where:{id:groupId},include:{contacts:{include:{contact:true}}}});
-  const contacts=group.contacts.map(m=>m.contact).sort((a,b)=>a.name.localeCompare(b.name)||a.phone.localeCompare(b.phone));
+  const members=group.systemKey==='OPTED_IN'
+    ? await db.contact.findMany({where:{consent:true,consentStatus:'OPTED_IN'}})
+    : group.contacts.map(m=>m.contact);
+  const contacts=members.sort((a,b)=>a.name.localeCompare(b.name)||a.phone.localeCompare(b.phone));
   const eligible=contacts.filter(c=>eligibleContact(c,input.purpose==='OPT_IN'?'OPT_IN':'STANDARD'));
   if (!eligible.length) throw new DeskError('This group has no eligible contacts for the selected message purpose.',409);
   let sent=0,failed=0;

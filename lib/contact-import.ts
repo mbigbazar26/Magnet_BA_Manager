@@ -125,7 +125,7 @@ export async function commitImport(client: PrismaClient, rows: ImportRow[], grou
   if (!rows.length) throw new DeskError('There are no valid contacts to import.');
   if (groupIds.length > 100 || new Set(groupIds).size !== groupIds.length || groupIds.some(id => typeof id !== 'string' || id.length > 64)) throw new DeskError('Choose valid contact groups.');
   return client.$transaction(async tx => {
-    if (groupIds.length && await tx.contactGroup.count({where: {id: {in: groupIds}}}) !== groupIds.length) throw new DeskError('A selected group no longer exists. Refresh and preview again.', 409);
+    if (groupIds.length && await tx.contactGroup.count({where: {id: {in: groupIds},systemKey:null}}) !== groupIds.length) throw new DeskError('A selected custom group no longer exists, or an automatic group was selected. Refresh and preview again.', 409);
     const inserted = await tx.contact.createMany({data: rows.map(({name, phone}) => ({name, phone, consentStatus: 'PENDING', consent: false})), skipDuplicates: true});
     const contacts = await tx.contact.findMany({where: {phone: {in: rows.map(row => row.phone)}}, select: {id: true}});
     // Existing names and consent decisions are never overwritten by a file import.

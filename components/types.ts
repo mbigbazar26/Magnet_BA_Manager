@@ -1,4 +1,4 @@
-export type ContactGroup = { id: string; name: string; contactCount?: number };
+export type ContactGroup = { id: string; name: string; contactCount?: number; systemKey?: string|null };
 export type Contact = { id: string; name: string; phone: string; consent: boolean; consentStatus: 'PENDING'|'OPTED_IN'|'OPTED_OUT'; consentUpdatedAt:string|null; consentAt: string | null; updatedAt: string; createdAt: string; groups: ContactGroup[] };
 export type Template = { id: string; name: string; language: string; category: string; body: string; status: string; parameters: number; supported: boolean; imageHeader: boolean; quickReplies:string[]; footer:string };
 export type Message = { id: string; phone: string; direction: "IN" | "OUT"; status: string; error: string | null; body: string; createdAt: string; updatedAt: string };

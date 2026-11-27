@@ -24,6 +24,7 @@ model Contact {
 model ContactGroup {
   id        String   @id @default(cuid())
   name      String   @unique
+  systemKey String?  @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   contacts  ContactGroupMembership[]

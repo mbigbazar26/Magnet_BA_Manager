@@ -10,7 +10,7 @@
     "start:cloud": "node scripts/cloud.mjs",
     "test:cloud": "node --test scripts/cloud.test.mjs scripts/auth-cloud.test.mjs",
     "test:contacts": "node --import ./scripts/test-typescript.mjs --test scripts/contacts.test.mjs",
-    "test:contacts:integration": "node --import ./scripts/test-typescript.mjs --test scripts/contacts.integration.test.mjs",
+    "test:contacts:integration": "node --import ./scripts/test-typescript.mjs --test scripts/contacts.integration.test.mjs scripts/automatic-group.integration.test.mjs",
     "relay": "node scripts/webhook-relay.mjs",
     "db:deploy": "prisma migrate deploy"
   },
