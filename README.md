@@ -2,6 +2,46 @@
 
 For the Render Free + Neon testing deployment, follow [DEPLOY_RENDER_NEON.md](DEPLOY_RENDER_NEON.md). The Windows launcher continues to run the local version; the cloud service uses `npm run start:cloud`.
 
+## Bulk contact import and offers consent
+
+Open **Contacts > Import contacts** to upload a UTF-8 `.csv` or an Excel `.xlsx` workbook (up to 5 MB and 5,000 contacts). The first row must contain column headers. Select the worksheet for a workbook, map the name and phone columns, and choose one or more contact groups. A contact can belong to multiple groups. `.xls` files must first be saved as `.xlsx`.
+
+For example:
+
+```csv
+name,phone
+Example Customer,+919876543210
+Second Customer,+919876543211
+```
+
+Format Excel phone columns as Text to preserve country codes and leading digits. Explicit `+country-code` numbers are preserved. The default country code starts at `91`; change or clear it for your source file. Indian ten-digit mobile numbers are expanded with `+91`. Scientific notation, formula cells and invalid phone numbers are rejected rather than guessed.
+
+Select **Preview import** before saving. The preview shows valid, invalid, duplicate, new and existing rows, with the first 20 valid contacts and up to 100 row errors. **Import contacts** imports valid rows only. Duplicate phone numbers within a file use the first valid row. A repeat import does not create duplicate contacts or group memberships. Existing contacts retain their names, group memberships and consent choices; newly selected groups are added. New contacts begin as **Awaiting response**. Uploads are processed in memory and do not send WhatsApp messages or retain the original file.
+
+The Contacts filters show **Awaiting response**, **Opted in** and **Opted out**, and can be combined with a group filter. A contact's category follows their consent status across all groups.
+
+Under **Initial opt-in message and reply rules**, select the existing approved initial template and map its reply buttons. For `offers_optin_template` in Malayalam, the mapping is:
+
+- Button 1, **I would not like to receive offers**: **Opted out**.
+- Button 2, **I would like to receive offers**: **Opted in**.
+
+Save the reply rules. In **Compose**, choose **Initial opt-in request** to send that configured template to a contact or group before offers consent. A contact does not need to be opted in to receive the initial request. Contacts who have explicitly opted out are excluded until fresh permission is recorded. Use contacts who have agreed to be contacted. Normal template/offer sends continue to require opted-in status. Group sends display the eligible count and skip ineligible members.
+
+Incoming quick-reply buttons automatically update contact status when the signed Meta `messages` webhook reaches this app. Unanswered or unrelated responses leave contacts awaiting. Optional exact typed phrases can be configured, one phrase per line; leave those fields empty for buttons only. `STOP` and `UNSUBSCRIBE` always withdraw consent. The handler associates consent replies with the original message and sender, stores consent-change events, ignores duplicate callbacks, and prevents older replies from overriding newer choices. For events sharing the same timestamp second, opt-out takes precedence. Rules are captured when an initial message is sent, so editing rules later does not reinterpret its buttons. Previously recorded zero-parameter initial templates can also be recognized after their buttons are configured.
+
+Incoming messages and consent events are retained; older events arriving after a newer decision do not change the current contact status. Consent choices can also be corrected manually from **Edit contact**. On upgrade, existing opted-in contacts remain opted in, previously recorded STOP/UNSUBSCRIBE withdrawals remain opted out, and other contacts without offers consent become awaiting.
+
+This feature adds the `20261127000000_contact_import_consent` Prisma migration. The Windows launcher and cloud launcher apply it at startup. Back up existing data before applying it to another database. Push the source and lockfile changes to the deployed Git branch before redeploying Render; local changes do not update the hosted app automatically. Configure the initial template mapping in each separate database.
+
+Validation:
+
+```powershell
+npm.cmd run test:contacts
+npm.cmd run test:contacts:integration
+```
+
+Integration tests require the local PostgreSQL server. They create and remove a disposable `desk_contacts_test_*` database, mock all Meta sends, and do not modify customer records in the app database.
+
 The desk is a local web application for managing WhatsApp contacts, submitting text templates, and sending approved template messages. It connects to Meta's WhatsApp Cloud API from your computer. Your computer must be connected to the internet for Meta operations.
 
 ## Quick start
@@ -18,11 +58,11 @@ Double-click `Connect Meta.cmd` to enter the System User access token. The input
 4. Under **Compose**, choose one opted-in contact or a contact group and an approved supported template. Group sends include only opted-in contacts; other group members are skipped. Fill each numbered field, review the recipient count and message preview, and confirm the send. The desk sends one message per eligible contact and reports accepted, not-confirmed, and skipped counts. Meta may charge for eligible messages.
 5. Open **Messages** to inspect recent outgoing and incoming messages. The desk shows the most recent 250 messages. A webhook is required for delivery updates and incoming messages.
 
-The desk supports text templates and templates with an image header and a text body, including numbered positional fields. For a new marketing image template, select a JPEG or PNG example and enter the Meta App ID when submitting it for review. Once approved and synced, select the template in Compose and choose the image to send; the image is previewed before confirmation. Images must be smaller than 5 MB. Meta may require a suitable access token for the example upload. Templates with other headers, buttons or components are not supported for sending. Group sends are submitted as individual messages to opted-in members. Scheduling and automatic order triggers are future work.
+The desk supports text templates and templates with an image header and a text body, including numbered positional fields, optional static footers and quick-reply buttons. For a new marketing image template, select a JPEG or PNG example and enter the Meta App ID when submitting it for review. Once approved and synced, select the template in Compose and choose the image to send; the image is previewed before confirmation. Images must be smaller than 5 MB. Meta may require a suitable access token for the example upload. Other header formats and button types are not supported. Offer group sends include opted-in members; the configured initial opt-in template has its own sending mode described above. Scheduling and automatic order triggers are future work.
 
 ## Message and template statuses
 
-Synced templates with an image header, a text body, an optional static footer, and quick-reply buttons can be selected in Compose once approved. The preview includes the customer reply choices. Other button types remain unsupported. Quick-reply responses appear through the messages webhook; consent changes from those buttons are not automated yet.
+Synced templates with an image header, a text body, an optional static footer, and quick-reply buttons can be selected in Compose once approved. The preview includes the customer reply choices. Other button types remain unsupported. Quick-reply responses appear through the messages webhook; mapped responses to the configured initial template automatically update offers consent.
 
 **Pending** means the template has been submitted and awaits Meta's review. **Approved** makes a supported template selectable for sending. **Rejected** requires attention in WhatsApp Manager. **Unavailable** means a previous local template was not present in the latest completed sync.
 

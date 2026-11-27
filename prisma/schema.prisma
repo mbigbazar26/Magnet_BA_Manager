@@ -13,9 +13,12 @@ model Contact {
   name      String
   consent   Boolean  @default(false)
   consentAt DateTime?
+  consentStatus String @default("PENDING")
+  consentUpdatedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   groups    ContactGroupMembership[]
+  consentEvents ConsentEvent[]
 }
 
 model ContactGroup {
@@ -47,6 +50,7 @@ model Template {
   status     String
   components Json
   updatedAt  DateTime @updatedAt
+  consentSettings ConsentSettings[]
   @@unique([name, language])
 }
 
@@ -59,8 +63,33 @@ model Message {
   body      String
   status    String
   error     String?
+  purpose   String    @default("STANDARD")
+  consentRequest Json?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   @@index([phone, createdAt])
   @@index([createdAt])
+}
+
+model ConsentSettings {
+  id String @id @default("main")
+  templateId String?
+  template Template? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  acceptButton Int?
+  declineButton Int?
+  acceptWords String[] @default([])
+  declineWords String[] @default([])
+  updatedAt DateTime @updatedAt
+}
+
+model ConsentEvent {
+  id String @id @default(cuid())
+  contactId String
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  status String
+  source String
+  messageId String? @unique
+  occurredAt DateTime
+  createdAt DateTime @default(now())
+  @@index([contactId, occurredAt])
 }

@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { isAuthorized, isSameOrigin } from '@/lib/auth';
-import { contact, createGroup, deleteGroup, send, sendGroup, state, submitTemplate, sync } from '@/lib/desk';
+import { contact, createGroup, deleteGroup, saveConsentSettings, send, sendGroup, state, submitTemplate, sync } from '@/lib/desk';
 import { credentials, DeskError, graph } from '@/lib/meta';
 
 export const dynamic = 'force-dynamic';
@@ -18,7 +18,7 @@ function failure(e: unknown) {
     if (e.code === 'P2002') return reply({error:'This entry already exists. Refresh to see its current state.'},409);
     if (e.code === 'P2025') return reply({error:'The selected item no longer exists.'},404);
   }
-  return reply({error:'The local database is unavailable or could not save this change. Check that PostgreSQL is running and migrations are applied.'},503);
+  return reply({error:'The database is unavailable or could not save this change. Check the PostgreSQL connection and applied migrations.'},503);
 }
 
 export async function GET(req: Request, ctx: Context) {
@@ -29,7 +29,7 @@ export async function GET(req: Request, ctx: Context) {
 
 export async function POST(req: Request, ctx: Context) {
   if (!isAuthorized(req)) return reply({error:'Sign in to continue.'},401);
-  if (!isSameOrigin(req)) return reply({error:'Use the local dashboard to make changes.'},403);
+  if (!isSameOrigin(req)) return reply({error:'Use the signed-in dashboard to make changes.'},403);
   if (!req.headers.get('content-type')?.startsWith('application/json')) return reply({error:'Expected JSON.'},415);
   try {
     const raw = await req.text();
@@ -41,6 +41,7 @@ export async function POST(req: Request, ctx: Context) {
       case 'contacts': await contact(input); break;
       case 'groups': await createGroup(input); break;
       case 'delete-group': await deleteGroup(input); break;
+      case 'consent-settings': await saveConsentSettings(input); break;
       case 'templates': await submitTemplate(input); break;
       case 'send': await send(input); break;
       case 'send-group': return reply(await sendGroup(input));

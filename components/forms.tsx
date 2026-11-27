@@ -10,22 +10,22 @@ async function uploadImage(file:File,mode:"example"|"message",appId?:string) {
 }
 
 export function Badge({ status }: {status:string}) {
-  const tone = /^(approved|delivered|read|received|opted in)$/i.test(status) ? "mint" : /failed|rejected|error|unknown/i.test(status) ? "rose" : /pending|submitt|sending/i.test(status) ? "amber" : "neutral";
+  const tone = /^(approved|delivered|read|received|opted in)$/i.test(status) ? "mint" : /failed|rejected|error|unknown|opted out/i.test(status) ? "rose" : /pending|submitt|sending|awaiting/i.test(status) ? "amber" : "neutral";
   return <span className={"badge " + tone}>{status.replaceAll("_"," ").toLowerCase()}</span>;
 }
 
 export function ContactEditor({ contact, groups, run, busy, close }: {contact?:Contact;groups:ContactGroup[];run:Action;busy:boolean;close:()=>void}) {
-  const [consent,setConsent] = useState(contact?.consent ?? false);
+  const [consentStatus,setConsentStatus] = useState(contact?.consentStatus ?? 'PENDING');
   const [groupIds,setGroupIds] = useState<string[]>(contact?.groups.map(g=>g.id) ?? []);
   async function submit(e:FormEvent<HTMLFormElement>) {
     e.preventDefault(); const data = new FormData(e.currentTarget);
-    if(await run("contacts",{id:contact?.id,name:data.get("name"),phone:data.get("phone"),consent,groupIds},"Contact saved.")) close();
+    if(await run("contacts",{id:contact?.id,name:data.get("name"),phone:data.get("phone"),consentStatus,groupIds},"Contact saved.")) close();
   }
   return <form className="panel form-card" onSubmit={submit}>
     <div className="card-head"><h2>{contact ? "Edit contact" : "New contact"}</h2><button className="quiet" type="button" onClick={close}>Close</button></div>
     <label>Customer name<input name="name" defaultValue={contact?.name} autoComplete="off" required maxLength={100} /></label>
     <label>WhatsApp number<input name="phone" type="tel" defaultValue={contact?.phone} readOnly={!!contact} placeholder="+91…" required /></label>
-    <label className="check"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)} />This customer agreed to receive WhatsApp messages.</label>
+    <label>Offers consent<select value={consentStatus} onChange={e=>setConsentStatus(e.target.value as Contact['consentStatus'])}><option value="PENDING">Awaiting response</option><option value="OPTED_IN">Opted in</option><option value="OPTED_OUT">Opted out</option></select><small>Record opted in only when the customer has agreed to offers. Customer replies update this automatically when reply rules and webhooks are configured.</small></label>
     {groups.length>0&&<fieldset className="group-picker"><legend>Contact groups</legend>{groups.map(g=><label className="check" key={g.id}><input type="checkbox" checked={groupIds.includes(g.id)} onChange={e=>setGroupIds(current=>e.target.checked?[...current,g.id]:current.filter(id=>id!==g.id))}/>{g.name}</label>)}</fieldset>}
     <button className="primary" disabled={busy}>Save contact</button>
   </form>;
@@ -73,6 +73,7 @@ export function TemplateEditor({run,busy,close}:{run:Action;busy:boolean;close:(
 }
 
 export function Compose({state,run,busy,go}:{state:DeskState;run:Action;busy:boolean;go:(view:"Contacts"|"Templates"|"Setup"|"Messages")=>void}) {
+  const [purpose,setPurpose]=useState<'STANDARD'|'OPT_IN'>('STANDARD');
   const [recipientType,setRecipientType]=useState<"contact"|"group">("contact"),[contactId,setContact] = useState(""),[groupId,setGroup] = useState(""), [templateId,setTemplate] = useState(""), [parameters,setParams] = useState<string[]>([]);
   const [sent,setSent]=useState(false), [reviewed,setReviewed]=useState(false);
   const [image,setImage]=useState<File|null>(null),[uploading,setUploading]=useState(false),[uploadError,setUploadError]=useState("");
@@ -80,10 +81,11 @@ export function Compose({state,run,busy,go}:{state:DeskState;run:Action;busy:boo
   const imageId=useRef("");
   useEffect(()=>{if(!image){setImagePreview("");return;}const url=URL.createObjectURL(image);setImagePreview(url);return()=>URL.revokeObjectURL(url);},[image]);
   const requestId=useRef("");
-  const contacts=state.contacts.filter(c=>c.consent), templates=state.templates.filter(t=>t.supported&&t.status.toUpperCase()==="APPROVED");
+  const eligible=(c:Contact)=>purpose==='OPT_IN'?c.consentStatus!=='OPTED_OUT':c.consent&&c.consentStatus==='OPTED_IN';
+  const contacts=state.contacts.filter(eligible), templates=state.templates.filter(t=>t.supported&&t.status.toUpperCase()==="APPROVED"&&(purpose!=='OPT_IN'||t.id===state.consentSettings?.templateId));
   const contact=contacts.find(c=>c.id===contactId), group=state.groups.find(g=>g.id===groupId), template=templates.find(t=>t.id===templateId);
   const groupMembers=group?state.contacts.filter(c=>c.groups.some(g=>g.id===group.id)):[];
-  const eligibleGroupMembers=groupMembers.filter(c=>c.consent);
+  const eligibleGroupMembers=groupMembers.filter(eligible);
   const values=Array.from({length:template?.parameters??0},(_,i)=>parameters[i]??"");
   const preview=template?.body.replace(/\{\{(\d+)\}\}/g,(match,n)=>values[Number(n)-1]||match);
   const configured=state.setup.hasToken&&!!state.setup.phoneNumberId&&!!state.setup.accountId;
@@ -98,30 +100,32 @@ export function Compose({state,run,busy,go}:{state:DeskState;run:Action;busy:boo
     try {
       if(template?.imageHeader && image && !imageId.current) imageId.current=await uploadImage(image,"message");
       const result=recipientType==="contact"
-        ? await run("send",{contactId,templateId,parameters:values,requestId:requestId.current,imageId:imageId.current},"Send request recorded. Check Messages for its status.")
-        : await run("send-group",{groupId,templateId,parameters:values,batchId:requestId.current,imageId:imageId.current},"Group send finished.");
+        ? await run("send",{contactId,templateId,purpose,parameters:values,requestId:requestId.current,imageId:imageId.current},"Send request recorded. Check Messages for its status.")
+        : await run("send-group",{groupId,templateId,purpose,parameters:values,batchId:requestId.current,imageId:imageId.current},"Group send finished.");
       if(result) setSent(true);
     } catch(e) {setUploadError(e instanceof Error?e.message:"Image upload failed.");} finally {setUploading(false);}
   }
   return <div className="compose-grid"><form onSubmit={submit} className="panel form-card">
     <div className="card-head"><h2>Message details</h2></div>
+    <label>Message purpose<select value={purpose} disabled={busy||sent} onChange={e=>{const next=e.target.value as 'STANDARD'|'OPT_IN';setPurpose(next);reset();setContact('');setGroup('');setTemplate(next==='OPT_IN'?state.consentSettings?.templateId||'':'');setParams([]);setImage(null);}}><option value="STANDARD">Offers / normal template (opted-in contacts)</option><option value="OPT_IN">Initial opt-in request (before offers consent)</option></select></label>
+    {purpose==='OPT_IN'&&<div className="hint">Only the initial template configured in Contacts can be sent in this mode. Awaiting contacts can receive it before opting in; contacts who explicitly opted out are skipped. Use contacts who have agreed to be contacted.</div>}
     {!configured&&<div className="hint">Connect your Meta account to send. <button className="link" type="button" onClick={()=>go("Setup")}>Open setup</button></div>}
     <label>Send to<select value={recipientType} onChange={e=>{reset();setRecipientType(e.target.value as "contact"|"group");setContact("");setGroup("");}} disabled={busy||sent}><option value="contact">One contact</option><option value="group">A contact group</option></select></label>
     {recipientType==="contact"?<>
       <label>Recipient<select value={contactId} onChange={e=>{reset();setContact(e.target.value);}} disabled={busy||sent}><option value="">Choose a contact</option>{contacts.map(c=><option value={c.id} key={c.id}>{c.name} · {c.phone}</option>)}</select></label>
-      {!contacts.length&&<small>Save a contact with consent first. <button type="button" className="link" onClick={()=>go("Contacts")}>Contacts →</button></small>}
+      {!contacts.length&&<small>No eligible contacts for this purpose. <button type="button" className="link" onClick={()=>go("Contacts")}>Contacts →</button></small>}
     </>:<>
       <label>Recipient group<select value={groupId} onChange={e=>{reset();setGroup(e.target.value);}} disabled={busy||sent}><option value="">Choose a group</option>{state.groups.map(g=><option value={g.id} key={g.id}>{g.name} ({g.contactCount??0})</option>)}</select></label>
-      {group&&<div className="hint">This group has {groupMembers.length} contacts. {eligibleGroupMembers.length} opted-in contacts will receive the message; {groupMembers.length-eligibleGroupMembers.length} without consent will be skipped.</div>}
+      {group&&<div className="hint">This group has {groupMembers.length} contacts. {eligibleGroupMembers.length} {purpose==='OPT_IN'?'eligible':'opted-in'} contacts will receive the message; {groupMembers.length-eligibleGroupMembers.length} ineligible contacts will be skipped.</div>}
       {!state.groups.length&&<small>Create a contact group and assign contacts first. <button type="button" className="link" onClick={()=>go("Contacts")}>Open Contacts →</button></small>}
-      {group&&eligibleGroupMembers.length===0&&<small>This group has no opted-in contacts, so it cannot receive a send.</small>}
+      {group&&eligibleGroupMembers.length===0&&<small>This group has no eligible contacts for this message purpose.</small>}
     </>}
     <label>Approved template<select value={templateId} onChange={e=>{reset();setTemplate(e.target.value);setParams([]);}} disabled={busy||sent}><option value="">Choose a template</option>{templates.map(t=><option key={t.id} value={t.id}>{t.name} · {t.language}</option>)}</select></label>
     {template?.imageHeader&&<label>Message image<input type="file" accept="image/jpeg,image/png" disabled={busy||uploading||sent} onChange={e=>{reset();setImage(e.target.files?.[0]||null);}} required /><small>Choose a JPEG or PNG image under 5 MB.</small></label>}
     {uploadError&&<p role="alert" className="error-text">{uploadError}</p>}
-    {!templates.length&&<small>Sync or create an approved text template. <button type="button" className="link" onClick={()=>go("Templates")}>Templates →</button></small>}
+    {!templates.length&&<small>{purpose==='OPT_IN'?'Configure an approved initial template and its reply rules in Contacts.':'Sync or create an approved template.'} <button type="button" className="link" onClick={()=>go(purpose==='OPT_IN'?'Contacts':'Templates')}>Open {purpose==='OPT_IN'?'Contacts':'Templates'} →</button></small>}
     {values.map((v,i)=><label key={i}>Field {i+1}<input value={v} disabled={busy||sent} onChange={e=>{reset();setParams(values.map((s,j)=>j===i?e.target.value:s));}} required /></label>)}
-    {reviewed&&!sent&&<div className="hint">{recipientType==="contact"?<>Send this WhatsApp message to <strong>{contact?.name}</strong> at {contact?.phone}?</>:<>Send this WhatsApp message to <strong>{eligibleGroupMembers.length} opted-in contacts</strong> in “{group?.name}”?</>}</div>}
+    {reviewed&&!sent&&<div className="hint">{recipientType==="contact"?<>Send this WhatsApp message to <strong>{contact?.name}</strong> at {contact?.phone}?</>:<>Send this WhatsApp message to <strong>{eligibleGroupMembers.length} {purpose==='OPT_IN'?'eligible':'opted-in'} contacts</strong> in “{group?.name}”?</>}</div>}
     {sent?<button type="button" className="primary" onClick={()=>go("Messages")}>View message history →</button>:<button className="primary" disabled={busy||uploading||!ready}>{busy||uploading?"Working…":reviewed?"Confirm and send":"Review message"}</button>}
   </form><aside className="panel preview-panel"><h2>Message preview</h2><div className="preview-chat"><div className="conversation-label"><span className="brand-mark mini">B</span>Mancherikalam BigBazar</div><div className="chat-bubble">{template?.imageHeader&&imagePreview&&<img src={imagePreview} alt="Selected message header" style={{display:"block",maxWidth:"100%",maxHeight:240,marginBottom:10}}/>}{preview||"Select a template to preview the message here."}{template?.footer&&<small style={{display:"block",marginTop:10}}>{template.footer}</small>}</div>{!!template?.quickReplies.length&&<div aria-label="Customer reply choices" style={{display:"grid",gap:6,marginTop:10}}>{template.quickReplies.map((text,index)=><div className="secondary" style={{textAlign:"center",overflowWrap:"anywhere"}} key={index}>{text}</div>)}</div>}</div>{template&&<small>{template.name} · {template.language}</small>}</aside></div>;
 }

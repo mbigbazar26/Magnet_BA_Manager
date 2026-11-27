@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Action, Contact, DeskState, Message, View } from "../components/types";
 import { Badge, Compose, ContactEditor, GroupManager, TemplateEditor } from "../components/forms";
+import {ContactImport, ConsentConfiguration, consentLabel} from '../components/contact-tools';
 
 const nav: {view:View;mark:string}[] = [{view:"Overview",mark:"▦"},{view:"Messages",mark:"✉"},{view:"Contacts",mark:"♧"},{view:"Templates",mark:"▤"},{view:"Setup",mark:"⚙"}];
 const dateTime=(date:string)=>new Intl.DateTimeFormat(undefined,{day:"numeric",month:"short",hour:"numeric",minute:"2-digit"}).format(new Date(date));
@@ -27,6 +28,7 @@ export default function Dashboard(){
   const [view,setView]=useState<View>("Overview"), [state,setState]=useState<DeskState|null>(null), [busy,setBusy]=useState(false);
   const [notice,setNotice]=useState(""), [error,setError]=useState(""), [loadError,setLoadError]=useState("");
   const [edit,setEdit]=useState<Contact|"new"|null>(null), [creating,setCreating]=useState(false), [query,setQuery]=useState(""), [direction,setDirection]=useState("all");
+  const [importing,setImporting]=useState(false),[consentFilter,setConsentFilter]=useState('all'),[groupFilter,setGroupFilter]=useState('all');
   const request=useRef(0),pending=useRef(false);
   const refresh=useCallback(async()=>{
     const id=++request.current;
@@ -38,7 +40,7 @@ export default function Dashboard(){
     } catch(e){if(id===request.current)setLoadError(e instanceof Error?e.message:"Could not load workspace.");}
   },[]);
   useEffect(()=>{void refresh();const timer=setInterval(()=>{if(document.visibilityState==="visible" && !pending.current)void refresh();},20000);return()=>{clearInterval(timer);request.current++;};},[refresh]);
-  function go(next:View){setView(next);setEdit(null);setCreating(false);setQuery("");setDirection("all");setError("");setNotice("");}
+  function go(next:View){setView(next);setEdit(null);setCreating(false);setImporting(false);setQuery("");setDirection("all");setError("");setNotice("");}
   async function run(action:string,body:unknown,success:string){
     if(pending.current)return false;pending.current=true;setBusy(true);setError("");setNotice("");
     try{
@@ -48,7 +50,7 @@ export default function Dashboard(){
       const message=action==="check"
         ? "Connected to "+result.account+" · "+result.phone
         : action==="send-group"
-          ? `Meta accepted ${result.sent} messages for “${result.groupName}”; ${result.failed} not confirmed, ${result.skipped} skipped because consent is missing.`
+          ? `Meta accepted ${result.sent} messages for “${result.groupName}”; ${result.failed} not confirmed, ${result.skipped} ineligible contacts skipped.`
           : success;
       setNotice(message);await refresh();return true;
     }catch(e){setError(e instanceof Error?e.message:"The request failed.");await refresh();return false;}
@@ -57,7 +59,7 @@ export default function Dashboard(){
   async function logout(){try{const res=await fetch("/api/session",{method:"POST"});if(!res.ok)throw new Error();window.location.assign("/login");}catch{setError("Could not sign out. Try again.");}}
   const meta=state?.setup;
   const sendable=(state?.templates||[]).filter(t=>t.status.toUpperCase()==="APPROVED"&&t.supported);
-  const book=(state?.contacts||[]).filter(c=>(c.name+" "+c.phone).toLowerCase().includes(query.trim().toLowerCase()));
+  const book=(state?.contacts||[]).filter(c=>(consentFilter==='all'||c.consentStatus===consentFilter)&&(groupFilter==='all'||c.groups.some(g=>g.id===groupFilter))&&(c.name+" "+c.phone).toLowerCase().includes(query.trim().toLowerCase()));
   const feed=(state?.messages||[]).filter(m=>(direction==="all"||m.direction===direction)&&(m.phone+" "+nameFor(state!,m.phone)+" "+m.body+" "+m.status).toLowerCase().includes(query.trim().toLowerCase()));
   const titles:Record<View,string>={Overview:"Workspace overview",Messages:"Message history",Contacts:"Contacts",Templates:"Message templates",Compose:"Compose a message",Setup:"Workspace setup"};
   return <div className="shell">
@@ -67,7 +69,7 @@ export default function Dashboard(){
     </aside>
     <main className="stage"><div className="crumb">Mancherikalam BigBazar <span>/</span> {view}</div>
     <header className="page-head"><h1>{titles[view]}</h1>{(view==="Overview"||view==="Messages")&&<button className="primary" onClick={()=>go("Compose")}>＋ Compose message</button>}
-    {view==="Contacts"&&<button className="primary" onClick={()=>setEdit("new")}>＋ Add contact</button>}
+    {view==="Contacts"&&<div className="actions"><button className="secondary" onClick={()=>{setImporting(true);setEdit(null);}}>Import contacts</button><button className="primary" onClick={()=>{setEdit("new");setImporting(false);}}>＋ Add contact</button></div>}
     {view==="Templates"&&<div className="actions"><button className="secondary" disabled={busy||!meta?.hasToken} onClick={()=>run("sync",{},"Templates synced from Meta.")}>{busy?"Working…":"↻ Sync from Meta"}</button><button className="primary" onClick={()=>setCreating(true)}>＋ New template</button></div>}</header>
     {loadError&&<div role="alert" className="alert bad">Couldn’t load workspace data. {loadError} <button className="link" onClick={refresh}>Retry</button></div>}
     {error&&<div role="alert" className="alert bad">{error}</div>}{notice&&<div role="status" className="alert good">{notice}</div>}
@@ -79,7 +81,17 @@ export default function Dashboard(){
       <section className="panel"><div className="card-head"><h2>Recent messages</h2><button className="link" onClick={()=>go("Messages")}>View history →</button></div>{state.messages.length?<MessageRows state={state} rows={state.messages.slice(0,5)} />:<Empty title="Your message history starts here" details="Send your first template or connect a webhook to receive customer replies."/>}</section>
     </>}
     {state&&view==="Messages"&&<section className="panel"><div className="toolbar"><input aria-label="Search messages" placeholder="Search name, phone or message" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Direction" value={direction} onChange={e=>setDirection(e.target.value)}><option value="all">All messages</option><option value="IN">Incoming</option><option value="OUT">Outgoing</option></select><button className="secondary" onClick={refresh}>Refresh</button></div>{feed.length?<MessageRows rows={feed} state={state}/>:<Empty title="No matching messages" details={query?"Try a different search.":"Delivery updates and replies appear here when the webhook is connected."}/>}</section>}
-    {state&&view==="Contacts"&&<>{edit&&<ContactEditor key={edit==="new"?"new":edit.id} contact={edit==="new"?undefined:edit} groups={state.groups} run={run} busy={busy} close={()=>setEdit(null)}/>}<GroupManager groups={state.groups} run={run} busy={busy}/><section className="panel"><div className="toolbar"><h2>Address book</h2><input aria-label="Search contacts" placeholder="Search name or phone" value={query} onChange={e=>setQuery(e.target.value)}/></div>{book.length?<ul className="items">{book.map(c=><li key={c.id}><span className="avatar">{avatar(c.name)}</span><div className="list-main"><strong>{c.name}</strong><small>{c.phone}</small>{c.groups.length>0&&<div className="group-tags">{c.groups.map(g=><span key={g.id}>{g.name}</span>)}</div>}</div><Badge status={c.consent?"Opted in":"No consent"}/><button className="quiet" onClick={()=>setEdit(c)}>Edit</button></li>)}</ul>:<Empty title={query?"No matching contacts":"Your address book is empty"} details="Add a customer's name, number and messaging consent."/>}</section></>}
+    {state&&view==="Contacts"&&<>
+      {edit&&<ContactEditor key={edit==="new"?"new":edit.id} contact={edit==="new"?undefined:edit} groups={state.groups} run={run} busy={busy} close={()=>setEdit(null)}/>}
+      {importing&&<ContactImport state={state} busy={busy} refresh={refresh} close={()=>setImporting(false)}/>}
+      <ConsentConfiguration key={JSON.stringify(state.consentSettings)} state={state} run={run} busy={busy}/>
+      <div className="consent-tabs" role="group" aria-label="Filter contacts by offers consent">
+        {[['all','All contacts'],['PENDING','Awaiting response'],['OPTED_IN','Opted in'],['OPTED_OUT','Opted out']].map(([status,label])=><button key={status} className={'secondary '+(consentFilter===status?'selected':'')} aria-pressed={consentFilter===status} onClick={()=>setConsentFilter(status)}>{label} <span>{state.contacts.filter(c=>status==='all'||c.consentStatus===status).length}</span></button>)}
+      </div>
+      <GroupManager groups={state.groups} run={run} busy={busy}/>
+      <section className="panel"><div className="toolbar"><h2>Address book <small>({book.length})</small></h2><select aria-label="Filter contacts by group" value={groupFilter} onChange={e=>setGroupFilter(e.target.value)}><option value="all">All groups</option>{state.groups.map(group=><option key={group.id} value={group.id}>{group.name}</option>)}</select><input aria-label="Search contacts" placeholder="Search name or phone" value={query} onChange={e=>setQuery(e.target.value)}/></div>
+      {book.length?<ul className="items">{book.map(c=><li key={c.id}><span className="avatar">{avatar(c.name)}</span><div className="list-main"><strong>{c.name}</strong><small>{c.phone}</small>{c.consentUpdatedAt&&<small>Consent updated {dateTime(c.consentUpdatedAt)}</small>}{c.groups.length>0&&<div className="group-tags">{c.groups.map(g=><span key={g.id}>{g.name}</span>)}</div>}</div><Badge status={consentLabel(c.consentStatus)}/><button className="quiet" onClick={()=>{setEdit(c);setImporting(false);}}>Edit</button></li>)}</ul>:<Empty title={state.contacts.length?'No matching contacts':'Your address book is empty'} details="Import a CSV or Excel file, add a contact, or change the filters."/>}</section>
+    </>}
     {state&&view==="Templates"&&<>{creating&&<TemplateEditor run={run} busy={busy} close={()=>setCreating(false)}/>}<section className="panel"><div className="card-head"><h2>Template library</h2><small>{state.templates.length} total</small></div>{state.templates.length?<ul className="items">{state.templates.map(t=><li key={t.id}><span className="avatar tile">▤</span><div className="list-main"><strong>{t.name}</strong><small>{t.language} · {t.category.toLowerCase()}{!t.supported?" · Unsupported format":""}</small><p className="message-text">{t.body}</p></div><Badge status={t.status}/></li>)}</ul>:<Empty title="No templates in the local library" details="Sync templates from Meta or create one for review."/>}</section></>}
     {state&&view==="Compose"&&<Compose state={state} run={run} busy={busy} go={go}/>}
     {state&&view==="Setup"&&<SetupPanel state={state} run={run} busy={busy}/>}

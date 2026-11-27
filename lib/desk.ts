@@ -2,6 +2,7 @@ import { Prisma, type Template } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { db } from '@/lib/db';
 import { credentials, DeskError, graph, GraphError, setup } from './meta';
+import {CONSENT_STATES, eligibleContact, replyWords, type ConsentStatus} from './consent';
 
 type Input = Record<string, unknown>;
 type Component = { type: string; format?: string; text?: string; buttons?: {type:string;text:string}[]; example?: { body_text?: string[][]; header_handle?: string[] } };
@@ -47,16 +48,17 @@ function summarize(t: Template) {
 }
 
 export async function state() {
-  const [contacts, groups, templates, messages] = await Promise.all([
+  const [contacts, groups, templates, messages, consentSettings] = await Promise.all([
     db.contact.findMany({ include:{groups:{include:{group:true}}}, orderBy:{ name:'asc' } }),
     db.contactGroup.findMany({include:{_count:{select:{contacts:true}}},orderBy:{name:'asc'}}),
     db.template.findMany({ orderBy:[{name:'asc'},{language:'asc'}] }),
     db.message.findMany({ orderBy:[{createdAt:'desc'},{id:'desc'}], take:250 }),
+    db.consentSettings.findUnique({where:{id:'main'}}),
   ]);
   return {
     contacts:contacts.map(({groups:memberships,...c})=>({...c,groups:memberships.map(m=>m.group)})),
     groups:groups.map(({_count,...g})=>({...g,contactCount:_count.contacts})),
-    templates:templates.map(summarize), messages, setup:setup(),
+    templates:templates.map(summarize), messages, setup:setup(), consentSettings,
   };
 }
 
@@ -64,23 +66,29 @@ export async function contact(input: Input) {
   const name = field(input.name,'contact name',120);
   const phone = field(input.phone,'phone number',32).replace(/[\s()-]/g,'');
   if (!/^\+[1-9]\d{6,14}$/.test(phone)) throw new DeskError('Include the country code, e.g. +919876543210.');
-  if (typeof input.consent !== 'boolean') throw new DeskError('Choose a consent status.');
-  const consent = input.consent;
+  const consentStatus = input.consentStatus ?? (input.consent === true ? 'OPTED_IN' : input.consent === false ? 'PENDING' : '');
+  if (!CONSENT_STATES.includes(consentStatus as ConsentStatus)) throw new DeskError('Choose a consent status.');
+  const consent = consentStatus === 'OPTED_IN';
   const groupIds = input.groupIds === undefined ? undefined : await validateGroupIds(input.groupIds);
   if (input.id) {
     const id = field(input.id,'contact ID');
     const existing = await db.contact.findUniqueOrThrow({where:{id}});
-    const consentAt = consent ? (existing.phone === phone ? existing.consentAt : null) ?? new Date() : null;
-    const data={name,phone,consent,consentAt};
-    if (groupIds === undefined) await db.contact.update({where:{id},data});
-    else await db.$transaction(async tx=>{
+    if (phone !== existing.phone) throw new DeskError('An existing contact\'s phone number cannot be changed.');
+    const changed = consentStatus !== existing.consentStatus;
+    const occurredAt = new Date();
+    const consentAt = consent ? existing.consentAt ?? occurredAt : null;
+    const data={name,phone,consent,consentStatus:consentStatus as string,consentAt, ...(changed ? {consentUpdatedAt:occurredAt} : {})};
+    await db.$transaction(async tx=>{
       await tx.contact.update({where:{id},data});
-      await tx.contactGroupMembership.deleteMany({where:{contactId:id}});
-      if (groupIds.length) await tx.contactGroupMembership.createMany({data:groupIds.map(groupId=>({contactId:id,groupId}))});
+      if (changed) await tx.consentEvent.create({data:{contactId:id,status:consentStatus as string,source:'manual',occurredAt}});
+      if (groupIds !== undefined) {
+        await tx.contactGroupMembership.deleteMany({where:{contactId:id}});
+        if (groupIds.length) await tx.contactGroupMembership.createMany({data:groupIds.map(groupId=>({contactId:id,groupId}))});
+      }
     });
   } else {
     await db.contact.create({data:{
-      name,phone,consent,consentAt:consent ? new Date() : null,
+      name,phone,consent,consentStatus:consentStatus as string,consentAt:consent ? new Date() : null,consentUpdatedAt:new Date(),
       ...(groupIds?.length ? {groups:{create:groupIds.map(groupId=>({group:{connect:{id:groupId}}}))}} : {}),
     }});
   }
@@ -103,6 +111,23 @@ export async function createGroup(input:Input) {
 export async function deleteGroup(input:Input) {
   const id=field(input.id,'group ID',64);
   await db.contactGroup.delete({where:{id}});
+}
+
+export async function saveConsentSettings(input:Input) {
+  if (input.templateId === '') {
+    await db.consentSettings.upsert({where:{id:'main'},create:{id:'main'},update:{templateId:null,acceptButton:null,declineButton:null,acceptWords:[],declineWords:[]}});
+    return;
+  }
+  const templateId = field(input.templateId,'initial opt-in template');
+  const template = await db.template.findUniqueOrThrow({where:{id:templateId}});
+  const summary = summarize(template);
+  if (template.status !== 'APPROVED' || !summary.supported || summary.quickReplies.length < 2) throw new DeskError('Choose an approved supported template with at least two quick-reply buttons.');
+  const acceptButton = input.acceptButton, declineButton = input.declineButton;
+  if (![acceptButton,declineButton].every(index=>typeof index==='number' && Number.isInteger(index) && index>=0 && index<summary.quickReplies.length) || acceptButton===declineButton) throw new DeskError('Map different buttons to opted in and opted out.');
+  const acceptWords = replyWords(input.acceptWords ?? []), declineWords = replyWords(input.declineWords ?? []);
+  if (acceptWords.some(word=>declineWords.includes(word) || ['stop','unsubscribe'].includes(word))) throw new DeskError('Opt-in and opt-out phrases must be different. STOP and UNSUBSCRIBE always opt out.');
+  const data={templateId,acceptButton:acceptButton as number,declineButton:declineButton as number,acceptWords,declineWords};
+  await db.consentSettings.upsert({where:{id:'main'},create:{id:'main',...data},update:data});
 }
 
 function saveTemplate(t: MetaTemplate) {
@@ -168,9 +193,17 @@ export async function send(input: Input) {
     db.contact.findUniqueOrThrow({where:{id:field(input.contactId,'contact')}}),
     db.template.findUniqueOrThrow({where:{id:field(input.templateId,'template')}}),
   ]);
-  if (!recipient.consent) throw new DeskError('This contact has not opted in.',409);
+  const purpose = input.purpose === 'OPT_IN' ? 'OPT_IN' : 'STANDARD';
+  if (!eligibleContact(recipient,purpose)) throw new DeskError(purpose === 'OPT_IN' ? 'This customer has opted out. Record fresh permission before contacting them again.' : 'This contact has not opted in to offers.',409);
   const summary = summarize(t);
   if (t.status !== 'APPROVED' || !summary.supported) throw new DeskError('Choose an approved supported template.',409);
+  let consentRequest: Prisma.InputJsonObject | undefined;
+  if (purpose === 'OPT_IN') {
+    const settings = await db.consentSettings.findUnique({where:{id:'main'}});
+    if (!settings || settings.templateId !== t.id || settings.acceptButton === null || settings.declineButton === null
+      || !summary.quickReplies[settings.acceptButton] || !summary.quickReplies[settings.declineButton]) throw new DeskError('Configure this initial template and its reply buttons in Contacts first.',409);
+    consentRequest = {acceptButton:settings.acceptButton,declineButton:settings.declineButton,acceptLabel:summary.quickReplies[settings.acceptButton],declineLabel:summary.quickReplies[settings.declineButton],acceptWords:settings.acceptWords,declineWords:settings.declineWords};
+  }
   const parameters = values(input.parameters ?? [],summary.parameters);
   const imageId = summary.imageHeader ? field(input.imageId,'image media ID',64) : '';
   if (imageId && !/^\d+$/.test(imageId)) throw new DeskError('Invalid image media ID.');
@@ -180,7 +213,7 @@ export async function send(input: Input) {
     if (existing.phone === recipient.phone && existing.body === body && ['accepted','sent','delivered','read'].includes(existing.status)) return;
     throw new DeskError('This send was already recorded. Check Messages for its status.',409);
   }
-  const outbound = await db.message.create({data:{requestId,phone:recipient.phone,direction:'OUT',body,status:'submitting'}});
+  const outbound = await db.message.create({data:{requestId,phone:recipient.phone,direction:'OUT',body,status:'submitting',purpose,consentRequest}});
   let metaId: string;
   try {
     const result = await graph<{messages?:{id:string}[]}>(config.phoneNumberId + '/messages', {
@@ -222,8 +255,8 @@ export async function sendGroup(input:Input) {
   if (!/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(batchId)) throw new DeskError('Invalid send reference.');
   const group=await db.contactGroup.findUniqueOrThrow({where:{id:groupId},include:{contacts:{include:{contact:true}}}});
   const contacts=group.contacts.map(m=>m.contact).sort((a,b)=>a.name.localeCompare(b.name)||a.phone.localeCompare(b.phone));
-  const eligible=contacts.filter(c=>c.consent);
-  if (!eligible.length) throw new DeskError('This group has no contacts who opted in to WhatsApp messages.',409);
+  const eligible=contacts.filter(c=>eligibleContact(c,input.purpose==='OPT_IN'?'OPT_IN':'STANDARD'));
+  if (!eligible.length) throw new DeskError('This group has no eligible contacts for the selected message purpose.',409);
   let sent=0,failed=0;
   for (const recipient of eligible) {
     try {

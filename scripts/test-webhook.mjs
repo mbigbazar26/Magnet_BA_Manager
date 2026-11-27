@@ -19,7 +19,7 @@ const number = "999" + String(randomInt(1_000_000_000, 9_999_999_999));
 const phone = "+" + number;
 const sentId = "wamid.fixture.out." + runId;
 const receivedId = "wamid.fixture.in." + runId;
-const reserved = await db.contact.create({ data: { phone, name: "Webhook fixture", consent: true } });
+const reserved = await db.contact.create({ data: { phone, name: "Webhook fixture", consent: true, consentStatus:'OPTED_IN' } });
 
 async function callback(value, valid = true) {
   const json = JSON.stringify({
@@ -52,7 +52,7 @@ try {
   assert.equal(await db.message.count({ where: { metaId: receivedId } }), 0);
   assert.equal(await callback(incoming), 200);
   assert.equal((await db.contact.findUniqueOrThrow({ where: { phone } })).consent, false);
-  await db.contact.update({ where: { phone }, data: { consent: true, consentAt: new Date() } });
+  await db.contact.update({ where: { phone }, data: { consent: true, consentStatus:'OPTED_IN', consentAt: new Date(),consentUpdatedAt:new Date() } });
   assert.equal(await callback(incoming), 200, "replayed inbound message");
   assert.equal(await db.message.count({ where: { metaId: receivedId } }), 1);
   assert.equal((await db.contact.findUniqueOrThrow({ where: { phone } })).consent, true, "duplicate STOP cannot undo a new opt-in");

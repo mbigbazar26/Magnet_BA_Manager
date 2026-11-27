@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { db } from "@/lib/db";
+import {decideReply, replyMapping} from './consent';
 
 type RecordValue = Record<string, unknown>;
 
@@ -44,23 +45,50 @@ async function receive(message: RecordValue, contacts: RecordValue[]) {
   const seconds = Number(message.timestamp);
   const createdAt = Number.isSafeInteger(seconds) && seconds > 0 && seconds < 253402300800
     ? new Date(seconds * 1000) : new Date();
-  const stop = /^(stop|unsubscribe)$/i.test(body.trim());
+  const type = string(message.type);
+  const payload = type === 'button' ? string(record(message.button).payload)
+    : type === 'interactive' ? string(record(record(message.interactive).button_reply).id) : '';
+  const contextId = string(record(message.context).id);
+  const payloadId = /^desk_reply:([^:]+):\d+$/.exec(payload)?.[1];
   await db.$transaction(async tx => {
     const inserted = await tx.message.createMany({
       data: [{ metaId, phone, body, direction: "IN", status: "received", createdAt }],
       skipDuplicates: true,
     });
     if (!inserted.count) return;
-    await tx.contact.upsert({
+    const contact = await tx.contact.upsert({
       where: { phone },
       create: { phone, name, consent: false },
       update: {},
     });
-    if (stop) {
-      await tx.contact.updateMany({
-        where: { phone, OR: [{ consentAt: null }, { consentAt: { lt: new Date(createdAt.getTime() + 1000) } }] },
-        data: { consent: false, consentAt: null },
+    let outbound = payloadId || contextId ? await tx.message.findFirst({where:{phone,direction:'OUT',
+      ...(payloadId ? {id:payloadId} : {metaId:contextId})}}) : null;
+    if (outbound && contextId && outbound.metaId && outbound.metaId !== contextId) outbound = null;
+    if (!outbound && type === 'text' && !contextId && contact.consentStatus === 'PENDING') {
+      outbound = await tx.message.findFirst({where:{phone,direction:'OUT',purpose:'OPT_IN',
+        createdAt:{gte:new Date(createdAt.getTime()-30*86400000),lte:createdAt},status:{not:'failed'}},orderBy:{createdAt:'desc'}});
+    }
+    let mapping = outbound ? replyMapping(outbound.consentRequest) : null;
+    // Previously sent zero-parameter initial templates remain usable after mapping their buttons.
+    if (outbound && !mapping) {
+      const settings = await tx.consentSettings.findUnique({where:{id:'main'},include:{template:true}});
+      const template = settings?.template;
+      if (settings && template && template.body === outbound.body && !template.body.includes('{{')) {
+        const components = template.components as unknown as {type:string;buttons?:{type:string;text:string}[]}[];
+        const buttons = components.find(component=>component.type==='BUTTONS')?.buttons ?? [];
+        mapping = replyMapping({...settings,acceptLabel:buttons[settings.acceptButton ?? -1]?.text,declineLabel:buttons[settings.declineButton ?? -1]?.text});
+      }
+    }
+    const decision = decideReply(type,body,payload,mapping,outbound?.id);
+    if (decision) {
+      // Newer events win. Within one timestamp second, withdrawal takes precedence.
+      const changed = await tx.contact.updateMany({
+        where: {id:contact.id,OR:[{consentUpdatedAt:null},{consentUpdatedAt:{lt:createdAt}},
+          ...(decision==='OPTED_OUT'?[{consentUpdatedAt:createdAt}]:[])]},
+        data: {consentStatus:decision,consent:decision==='OPTED_IN',consentAt:decision==='OPTED_IN'?createdAt:null,
+          consentUpdatedAt:createdAt},
       });
+      if (changed.count) await tx.consentEvent.create({data:{contactId:contact.id,status:decision,source:'whatsapp',messageId:metaId,occurredAt:createdAt}});
     }
   });
 }
